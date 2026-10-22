@@ -1,0 +1,4 @@
+beatmaker/records/
+*.log
+node_modules/
+.claude/

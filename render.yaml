@@ -1,0 +1,12 @@
+# Render Blueprint: New + → Blueprint → выбрать этот репозиторий
+services:
+  - type: web
+    name: beatlab
+    runtime: node
+    plan: free
+    buildCommand: "true"
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: REC_LIMIT
+        value: "1000000000"

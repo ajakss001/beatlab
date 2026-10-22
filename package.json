@@ -1,0 +1,12 @@
+{
+  "name": "beatlab",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BEATLAB — битмейкер в браузере и онлайн рэп-баттлы",
+  "scripts": {
+    "start": "node beatmaker/serve.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
