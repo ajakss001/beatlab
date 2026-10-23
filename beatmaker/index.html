@@ -237,6 +237,17 @@
   .projitem .pn b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .projitem .pn small{color:var(--mute)}
 
+  /* мои звуки */
+  .smpbox{width:min(760px,100%)}
+  .smpdir{margin:14px 0 4px;color:var(--mute);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+  .smpitem{display:flex;gap:6px;align-items:center;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:6px 8px;margin-top:6px}
+  .smpitem .pn{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .smpitem .pn small{color:var(--mute);margin-left:6px}
+  .smpitem .btn{padding:5px 9px}
+  .smpitem .mode.on{border-color:#c6ff3d;color:#c6ff3d}
+  #dropHint{position:fixed;inset:0;z-index:60;background:#05050acc;border:3px dashed #c6ff3d;display:flex;align-items:center;justify-content:center;pointer-events:none;font-size:22px;font-weight:800;color:#c6ff3d}
+  #dropHint[hidden]{display:none}
+
   /* эффекты */
   .fxviz{display:block;width:100%;border-radius:8px;margin:2px 0 8px;background:#121218;touch-action:none;border:1px solid #ffffff10}
   .fxviz.eq{cursor:crosshair}
@@ -340,6 +351,7 @@
     <button id="undo" class="btn" title="Отменить (Ctrl+Z)">↶</button>
     <button id="redo" class="btn" title="Вернуть (Ctrl+Y)">↷</button>
     <button id="projBtn" class="btn" title="Сохранить бит под именем, открыть другой (Ctrl+S — сохранить)">📁 Мои биты</button>
+    <button id="smpBtn" class="btn" title="Загрузить свои звуки и паки (WAV, MP3…) — можно просто перетащить файлы или папку в окно">🎧 Мои звуки</button>
     <span id="saveInfo" class="saveinfo" title="Бит сам сохраняется в этом браузере при каждом изменении">💾 сохранено</span>
     <button id="masterFx" class="btn" title="Эффекты на весь бит">🎛 Мастер</button>
     <button id="battleBtn" class="btn primary" title="Комнаты баттлов: 1 на 1 и 2 на 2, 3 раунда, жюри">Баттлы</button>
@@ -507,6 +519,20 @@
   </div>
 </div>
 
+<!-- мои звуки -->
+<div id="smp" class="modal" hidden>
+  <div class="projbox smpbox">
+    <div class="drawhead"><span class="ttl">🎧 Мои звуки</span><span class="spacer"></span><button id="smpClose" class="btn">✕</button></div>
+    <div class="recnote">Загрузи свои сэмплы и паки — те же, что лежат у тебя для FL Studio. Подходят WAV, MP3, OGG, FLAC. Звуки хранятся в этом браузере и появляются в списке звуков канала, сверху, в разделе «Мои звуки». Файлы и папки можно просто перетащить в окно BEATLAB.<br>
+    <b>Удары</b> — звук ставится клетками, как барабан. <b>Ноты</b> — играешь звук в пианоролле, на C5 он звучит как в файле (как во FL).</div>
+    <div class="projrow"><button id="smpFiles" class="btn primary">Загрузить файлы</button><button id="smpDir" class="btn">Загрузить папку с паком</button><input id="smpSearch" type="text" class="txt" placeholder="Поиск по названию"></div>
+    <input id="smpFileIn" type="file" accept="audio/*,.wav,.mp3,.ogg,.flac,.m4a,.aif,.aiff" multiple hidden>
+    <input id="smpDirIn" type="file" webkitdirectory multiple hidden>
+    <div id="smpList"></div>
+  </div>
+</div>
+<div id="dropHint" hidden><div>Отпусти — звуки добавятся в «Мои звуки»</div></div>
+
 <!-- эффекты -->
 <div id="fxDrawer" class="drawer" hidden>
   <div class="drawhead"><span class="ttl" id="fxTitle"></span><span class="spacer"></span><button id="fxClose" class="btn">✕</button></div>
@@ -526,7 +552,10 @@ const MAX_CH = 24;       // каналов максимум
 const NOTE = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 const SCALE = [0, 2, 3, 5, 7, 8, 10];                            // натуральный минор
 const PALETTE_NOTES = [-4, -2, 0, 2, 3, 5, 7, 8, 10, 12, 14, 15];
-const PR_LOW = -12, PR_HIGH = 35;                                // диапазон пианоролла (полутоны от тоники)
+const N_MIN = -90, N_MAX = 140;                                  // ноты хранятся в полутонах от тоники
+// пианоролл как во FL: от C0 до B10 (MIDI 0–131), середина клавиатуры — C5
+const midiBase = ch => 24 + state.key + 12 * ((SOUNDS[ch.sound] || {}).oct || 0);
+const nLo = ch => -midiBase(ch), nHi = ch => 131 - midiBase(ch);
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const uid = () => 'c' + Math.random().toString(36).slice(2, 9);
 const dbToGain = db => Math.pow(10, db / 20);
@@ -753,6 +782,7 @@ const CATS = {
   bass:   { name: '808 и бас',               color: '#ff6a3d', vol: 0.9, melodic: true },
   melody: { name: 'Мелодия',                 color: '#6aa8ff', vol: 0.55, melodic: true },
   vocal:  { name: 'Вокал',                   color: '#ff8ad8', vol: 1 },
+  user:   { name: 'Мои звуки',               color: '#c6ff3d', vol: 0.8 },
 };
 const T = o => ({ k: 'T', ...o }), N = o => ({ k: 'N', ...o }), M = o => ({ k: 'M', ...o }), F = o => ({ k: 'F', ...o });
 const drum = (cat, name, layers, extra) => ({ cat, name, layers, ...extra });
@@ -876,7 +906,56 @@ const SOUNDS = {
   audio: { cat: 'vocal', name: 'Вокал', layers: [] },
 };
 const isAudio = ch => ch.sound === 'audio';
-const isMel = id => !!CATS[SOUNDS[id].cat].melodic;
+const isMel = id => { const s = SOUNDS[id]; return s.user ? s.mel : !!CATS[s.cat].melodic; };
+// роль звука в бите (бочка, снейр, бас…): у своих сэмплов угадывается по названию — для случайного бита, сайдчейна и MIDI
+const roleOf = snd => snd.role || snd.cat;
+
+// ================= свои звуки (сэмплы из своих паков) =================
+// id сэмпла — «u_» + начало SHA-256 файла: один и тот же файл у всех игроков даёт один и тот же звук
+const isUser = id => typeof id === 'string' && /^u_[0-9a-f]{16}$/.test(id);
+const sampleBufs = new Map();     // id → AudioBuffer
+let library = [];                 // звуки, загруженные в этот браузер: { id, name, folder, mel, size, addedAt }
+const DRUMISH = /kick|snare|clap|snap|hat|\bhh\b|\boh\b|crash|ride|cymbal|perc|rim|shaker|tom\b|conga|bongo|бочк|снейр|хэт|хет|тарел/i;
+const MELISH = /808|bass|sub\b|key|piano|pluck|lead|synth|melod|pad\b|bell|guitar|chord|string|flute|brass|choir|бас|мелод|пиан|гитар|аккорд/i;
+const guessMel = t => !DRUMISH.test(t) && MELISH.test(t);
+function guessRole(t, mel) {
+  if (mel) return /808|bass|sub\b|бас/i.test(t) ? 'bass' : 'melody';
+  return /kick|\bbd\b|бочк|кик/i.test(t) ? 'kick' : /snare|\bsd\b|снейр|снэр/i.test(t) ? 'snare' : /clap|snap|клэп|хлоп/i.test(t) ? 'clap'
+    : /open|\boh\b|crash|ride|cymbal|тарел/i.test(t) ? 'open' : /hat|\bhh\b|shaker|хэт|хет/i.test(t) ? 'hat'
+    : /perc|rim|tom\b|conga|bongo|cowbell|перк/i.test(t) ? 'perc' : 'fx';
+}
+function registerSample(id, name, mel, folder = '') {
+  const old = SOUNDS[id];
+  if (old) return old;
+  name = String(name || 'Мой звук').slice(0, 60);
+  mel = !!mel;
+  return (SOUNDS[id] = {
+    id, cat: 'user', name, oct: 3, user: true, mel, gate: mel, layers: [], role: guessRole(name + ' ' + folder, mel),
+    play: (e, t, out, v, f, gf, gate) => playSample(e, SOUNDS[id], t, out, v, f, gf, gate),
+  });
+}
+// сэмпл звучит как есть на ноте C5 (как во FL), выше и ниже — быстрее и медленнее
+function playSample(eng, snd, t, out, vel, f, glideFrom, gate) {
+  const buf = sampleBufs.get(snd.id);
+  if (!buf) { loadSample(snd.id); return { gs: [], end: t }; }
+  const c = eng.c, src = c.createBufferSource(), g = c.createGain();
+  src.buffer = buf;
+  const base = mtof(60), rate = f ? f / base : 1;
+  if (glideFrom) { src.playbackRate.setValueAtTime(glideFrom / base, t); src.playbackRate.exponentialRampToValueAtTime(rate, t + 0.09); }
+  else src.playbackRate.value = rate;
+  g.gain.value = vel;
+  src.connect(g).connect(out);
+  let end = t + buf.duration / rate;
+  if (gate && snd.mel && t + gate < end) {
+    // нота кончилась — сэмпл быстро затухает, как в сэмплере FL
+    g.gain.setValueAtTime(vel, t + gate);
+    g.gain.linearRampToValueAtTime(0, t + gate + 0.04);
+    end = t + gate + 0.04;
+  }
+  src.start(t);
+  src.stop(end + 0.02);
+  return { gs: [g], end };
+}
 
 // ================= эффекты (аналоги популярных плагинов) =================
 const TEMPO_DIV = { '1/16': 0.25, '1/8': 0.5, '1/8.': 0.75, '1/4': 1, '1/4.': 1.5, '1/2': 2 };
@@ -1265,7 +1344,7 @@ function normNotes(arr) {
     if (!x || typeof x !== 'object') continue;
     const s = Math.round(+x.s * 2) / 2, l = Math.round(+x.l * 2) / 2, n = Math.round(+x.n);
     if (!isFinite(s) || !isFinite(l) || !isFinite(n) || s < 0 || s >= MAX || l < 0.5) continue;
-    out.push({ s, l: Math.min(l, MAX), n: clamp(n, PR_LOW, PR_HIGH), v: typeof x.v === 'number' ? clamp(x.v, 0.05, 1) : 0.9 });
+    out.push({ s, l: Math.min(l, MAX), n: clamp(n, N_MIN, N_MAX), v: typeof x.v === 'number' ? clamp(x.v, 0.05, 1) : 0.9 });
     if (out.length >= 256) break;
   }
   return out;
@@ -1274,7 +1353,7 @@ function normNotes(arr) {
 function stepsToNotes(arr) {
   const idx = [];
   for (let i = 0; i < MAX; i++) if (Number.isInteger(arr[i])) idx.push(i);
-  return idx.map((i, k) => ({ s: i, l: Math.max(1, Math.min(16, (k + 1 < idx.length ? idx[k + 1] : MAX) - i)), n: clamp(arr[i], PR_LOW, PR_HIGH), v: 0.9 }));
+  return idx.map((i, k) => ({ s: i, l: Math.max(1, Math.min(16, (k + 1 < idx.length ? idx[k + 1] : MAX) - i)), n: clamp(arr[i], N_MIN, N_MAX), v: 0.9 }));
 }
 const notesAt = (ch, i) => ch.notes.filter(nt => Math.floor(nt.s) === i);
 const defaultLen = ch => (SOUNDS[ch.sound].gate ? 4 : 2);
@@ -1435,6 +1514,7 @@ function parsePattern(str) {
 function newChannel(sound) {
   const ch = { id: uid(), sound, steps: Array(MAX).fill(0), notes: [], vol: CATS[SOUNDS[sound].cat].vol, pan: 0, mute: false, solo: false, fx: [] };
   if (SOUNDS[sound].wave) ch.synth = synthFor(sound);
+  if (SOUNDS[sound].user) { ch.sname = SOUNDS[sound].name; ch.smel = SOUNDS[sound].mel; }
   return ch;
 }
 function baseState() {
@@ -1527,6 +1607,7 @@ function normalize(src) {
   const seen = new Set(), idMap = new Map();  // старый id канала → канал (нужно, чтобы найти его данные в паттернах)
   for (const c of chans) {
     if (b.channels.length >= MAX_CH) break;
+    if (c && isUser(c.sound)) registerSample(c.sound, c.sname, c.smel);
     if (!c || !SOUNDS[c.sound]) continue;
     const ch = newChannel(c.sound);
     if (typeof c.id === 'string' && /^c\w{1,12}$/.test(c.id) && !seen.has(c.id)) ch.id = c.id;
@@ -1785,6 +1866,7 @@ function choke(eng, key, t, tc = 0.01) {
 }
 
 function playDrum(eng, snd, t, out, vel) {
+  if (snd.user) { playSample(eng, snd, t, out, vel); return; }
   if (snd.chokes || snd.group) choke(eng, 'open', t, 0.008);
   const gs = [];
   let end = t;
@@ -1798,7 +1880,7 @@ const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
 function playMelodic(eng, ch, t, out, vel, n, gate) {
   const snd = SOUNDS[ch.sound];
   const f = mtof(24 + state.key + n + 12 * (snd.oct || 0));
-  if (snd.cat === 'bass') { // бас моно: новая нота глушит прошлую, при глайде — слайд
+  if (roleOf(snd) === 'bass') { // бас моно: новая нота глушит прошлую, при глайде — слайд
     const key = 'ch:' + ch.id, prev = eng.voices[key];
     const glideFrom = state.glide && prev && t < prev.end && prev.f !== f ? prev.f : null;
     choke(eng, key, t, 0.012);
@@ -1839,7 +1921,7 @@ function scheduleStep(eng, i, t, pat, only = null) {
     for (let k = 0; k < v; k++) {
       const tt = t + k * sd / v;
       if (!silent) playDrum(eng, snd, tt, out, k === 0 ? 1 : 0.75);
-      if (snd.cat === 'kick' && audible(ch, true)) duckAll(eng, tt);
+      if (roleOf(snd) === 'kick' && audible(ch, true)) duckAll(eng, tt);
     }
   }
 }
@@ -2007,14 +2089,25 @@ function toggle() {
 // ================= сетка каналов =================
 let cells = {}, cols = [], shown = -1, padEls = {};
 
-const SOUND_OPTIONS = Object.keys(CATS).filter(cat => cat !== 'vocal').map(cat =>
+const SOUND_OPTIONS = Object.keys(CATS).filter(cat => cat !== 'vocal' && cat !== 'user').map(cat =>
   `<optgroup label="${CATS[cat].name}">` +
   Object.keys(SOUNDS).filter(id => SOUNDS[id].cat === cat).map(id => `<option value="${id}">${SOUNDS[id].name}</option>`).join('') +
   '</optgroup>').join('');
 
+const escHtml = t => String(t).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]);
+function soundOptions() {
+  const groups = new Map();
+  for (const sm of library) { if (!groups.has(sm.folder)) groups.set(sm.folder, []); groups.get(sm.folder).push(sm.id); }
+  // звуки из открытого бита, которых нет в этом браузере (например, бит напарника)
+  const extra = [...new Set(state.channels.filter(c => isUser(c.sound) && !library.some(sm => sm.id === c.sound)).map(c => c.sound))];
+  if (extra.length) groups.set('из этого бита', extra);
+  let h = '';
+  for (const [f, ids] of groups) h += `<optgroup label="Мои звуки · ${escHtml(f)}">` + ids.map(id => `<option value="${id}">${escHtml(SOUNDS[id].name)}</option>`).join('') + '</optgroup>';
+  return h + SOUND_OPTIONS;
+}
 function noteName(n, oct = 0) {
   const m = 24 + state.key + n + 12 * oct;
-  return NOTE[((m % 12) + 12) % 12] + (Math.floor(m / 12) - 1);
+  return NOTE[((m % 12) + 12) % 12] + Math.floor(m / 12);   // как во FL: MIDI 60 = C5
 }
 function paletteName(semi) {
   return NOTE[((state.key + semi) % 12 + 12) % 12] + (semi >= 12 ? '↑' : semi < 0 ? '↓' : '');
@@ -2093,6 +2186,7 @@ function buildGrid() {
   cells = {}; padEls = {};
   cols = Array.from({ length: state.len }, () => []);
   shown = -1;
+  const opts = soundOptions();
   applyZoom();
   const cellCls = i => 'cell' + (i % 4 === 0 ? ' beat' : '') + (i % 4 === 0 && i ? ' gap' : '') + (Math.floor(i / 4) % 2 ? ' alt' : '');
 
@@ -2131,7 +2225,7 @@ function buildGrid() {
         if (name && name.trim()) { pushUndo(); ch.name = name.trim().slice(0, 40); buildGrid(); save(); }
       });
     } else {
-      sel = el('select', 'snd', SOUND_OPTIONS);
+      sel = el('select', 'snd', opts);
       sel.value = ch.sound; sel.title = 'Звук канала';
       sel.addEventListener('change', () => { pushUndo(); changeSound(ch, sel.value); });
     }
@@ -2203,7 +2297,7 @@ function buildGrid() {
           e.preventDefault();
           pushUndo(undefined, 'wheel:' + ch.id + ':' + i);
           const d = e.deltaY < 0 ? 1 : -1;
-          for (const nt of ns) nt.n = clamp(nt.n + d, PR_LOW, PR_HIGH);
+          for (const nt of ns) nt.n = clamp(nt.n + d, nLo(ch), nHi(ch));
           updateCell(ch, i); save();
           if (!playing) preview(ch, ns[0].n);
         }, { passive: false });
@@ -2220,7 +2314,7 @@ function buildGrid() {
   // добавить канал
   if (state.channels.length < MAX_CH) {
     const addHead = el('div', 'head');
-    const add = el('select', 'snd add', '<option value="">+ Добавить канал…</option>' + SOUND_OPTIONS);
+    const add = el('select', 'snd add', '<option value="">+ Добавить канал…</option>' + opts);
     add.addEventListener('change', () => {
       if (!add.value) return;
       pushUndo();
@@ -2238,21 +2332,26 @@ function buildGrid() {
 }
 $('#grid').addEventListener('contextmenu', e => e.preventDefault());
 
-function changeSound(ch, sound) {
-  const wasMel = isMel(ch.sound), nowMel = isMel(sound);
-  if (wasMel !== nowMel) {
+// n0 — на какую ноту встают удары (свой сэмпл — на C5, чтобы звучал как в файле)
+function convertChannel(ch, nowMel, n0 = 0) {
+  {
     // барабан ↔ мелодия: переводим шаги в ноты (или обратно) во всех паттернах
     commitPattern();
     for (const p of state.patterns) {
       const d = p.data[ch.id];
       if (!d) continue;
-      if (nowMel) { d.n = d.s.map((v, i) => (v > 0 ? { s: i, l: 2, n: 0, v: 0.9 } : null)).filter(Boolean); d.s = Array(MAX).fill(0); }
+      if (nowMel) { d.n = d.s.map((v, i) => (v > 0 ? { s: i, l: 2, n: n0, v: 0.9 } : null)).filter(Boolean); d.s = Array(MAX).fill(0); }
       else { d.s = Array(MAX).fill(0); for (const nt of d.n) d.s[Math.floor(nt.s)] = 1; d.n = []; }
     }
     applyPattern(state);
   }
+}
+function changeSound(ch, sound) {
+  const wasMel = isMel(ch.sound), nowMel = isMel(sound);
+  if (wasMel !== nowMel) convertChannel(ch, nowMel, SOUNDS[sound].user ? -state.key : 0);
   if (CATS[SOUNDS[ch.sound].cat] !== CATS[SOUNDS[sound].cat]) ch.vol = CATS[SOUNDS[sound].cat].vol;
   ch.sound = sound;
+  if (SOUNDS[sound].user) { ch.sname = SOUNDS[sound].name; ch.smel = SOUNDS[sound].mel; } else { delete ch.sname; delete ch.smel; }
   if (SOUNDS[sound].wave && !ch.synth) ch.synth = synthFor(sound);
   if (syn && syn.ch === ch && !SOUNDS[sound].wave) closeSynth();
   buildGrid(); save();
@@ -2331,6 +2430,7 @@ function syncControls() {
 }
 
 function rebuildAll() {
+  preloadSamples();
   syncControls();
   buildGrid();
   buildPalette();
@@ -2537,9 +2637,9 @@ function generateBeat(gKey) {
 
   let leadDone = false;
   for (const ch of state.channels) {
-    const snd = SOUNDS[ch.sound], cat = snd.cat;
-    if (cat === 'bass') { ch.notes = bassNotes(); continue; }
-    if (cat === 'melody') {
+    const snd = SOUNDS[ch.sound], cat = roleOf(snd);
+    if (isMel(ch.sound) && cat === 'bass') { ch.notes = bassNotes(); continue; }
+    if (isMel(ch.sound)) {
       if (!snd.gate && !leadDone) { ch.notes = leadNotes(G, chordAt, L, (snd.oct || 0) >= 4); leadDone = true; }
       else ch.notes = chordNotes(G, prog, L);
       continue;
@@ -2573,7 +2673,7 @@ function randomize() {
 
 // ================= пианоролл =================
 let pr = null, prColW = 28, prRowH = 16, prSnap = 1, prLastLen = 2, prDrag = null;
-const PR_ROWS = PR_HIGH - PR_LOW + 1;
+const PR_ROWS = 132;
 const CHORDS = { none: [0], min: [0, 3, 7], maj: [0, 4, 7], min7: [0, 3, 7, 10], sus2: [0, 2, 7], sus4: [0, 5, 7], power: [0, 7, 12], oct: [0, 12] };
 
 function stampNotes(n) {
@@ -2597,7 +2697,7 @@ function openPianoRoll(ch) {
   const sc = $('#prScroll');
   const ns = ch.notes.map(nt => nt.n);
   const center = ns.length ? (Math.min(...ns) + Math.max(...ns)) / 2 : 7;
-  sc.scrollTop = (PR_HIGH - center) * prRowH - sc.clientHeight / 2;
+  sc.scrollTop = (nHi(pr.ch) - center) * prRowH - sc.clientHeight / 2;
   sc.scrollLeft = 0;
 }
 function closePianoRoll() {
@@ -2625,7 +2725,7 @@ function buildPianoRoll() {
   grid.style.setProperty('--pcw', prColW + 'px');
   grid.style.setProperty('--c', color);
   for (let r = 0; r < PR_ROWS; r++) {
-    const n = PR_HIGH - r;
+    const n = nHi(pr.ch) - r;
     const pc = ((24 + state.key + n) % 12 + 12) % 12, rel = ((n % 12) + 12) % 12;
     const black = [1, 3, 6, 8, 10].includes(pc), inScale = SCALE.includes(rel), root = rel === 0;
     const k = el('div', 'pk' + (black ? ' black' : '') + (root ? ' root' : ''), pc === 0 || root ? noteName(n, oct) : '');
@@ -2655,7 +2755,7 @@ function renderPrNotes() {
     if (nt.s >= state.len) continue;
     const d = el('div', 'prnote' + (pr.sel.has(nt) ? ' sel' : ''));
     d.style.left = nt.s * prColW + 'px';
-    d.style.top = (PR_HIGH - nt.n) * prRowH + 'px';
+    d.style.top = (nHi(pr.ch) - nt.n) * prRowH + 'px';
     d.style.width = Math.max(4, Math.min(nt.l, state.len - nt.s) * prColW - 1) + 'px';
     d.style.height = (prRowH - 1) + 'px';
     if (nt.l * prColW > 26 && prRowH >= 12) d.textContent = noteName(nt.n, oct);
@@ -2665,7 +2765,7 @@ function renderPrNotes() {
 function prPos(e) {
   const r = $('#prGrid').getBoundingClientRect();
   const x = e.clientX - r.left, y = e.clientY - r.top;
-  return { x, step: x / prColW, n: PR_HIGH - Math.floor(y / prRowH) };
+  return { x, step: x / prColW, n: nHi(pr.ch) - Math.floor(y / prRowH) };
 }
 function prNoteAt(step, n) {
   const ns = pr.ch.notes;
@@ -2681,7 +2781,7 @@ prGridEl.addEventListener('pointerdown', e => {
   if (!pr || (e.button !== 0 && e.button !== 2)) return;
   e.preventDefault();
   const { x, step, n } = prPos(e);
-  if (n < PR_LOW || n > PR_HIGH || step < 0 || step >= state.len) return;
+  if (n < nLo(pr.ch) || n > nHi(pr.ch) || step < 0 || step >= state.len) return;
   const ch = pr.ch, hit = prNoteAt(step, n), sel = pr.sel;
   const ctrl = e.ctrlKey || e.metaKey;
   prDrag = { snap: serialize() };
@@ -2713,7 +2813,7 @@ prGridEl.addEventListener('pointerdown', e => {
     sel.clear();
     if (ch.notes.length >= 256) { prDrag = null; renderPrNotes(); return toast('В канале максимум 256 нот'); }
     const s = snapFloor(step), l = Math.min(prLastLen, state.len - s);
-    const added = stampNotes(n).filter(v => v >= PR_LOW && v <= PR_HIGH).map(v => ({ s, l, n: v, v: 0.9 }));
+    const added = stampNotes(n).filter(v => v >= nLo(pr.ch) && v <= nHi(pr.ch)).map(v => ({ s, l, n: v, v: 0.9 }));
     ch.notes.push(...added);
     Object.assign(prDrag, { mode: 'move', notes: added, orig: added.map(a => ({ s: a.s, n: a.n, l: a.l })), s0: step, n0: n, lastN: n });
     for (const a of added) preview(ch, a.n);
@@ -2741,7 +2841,7 @@ prGridEl.addEventListener('pointermove', e => {
     Object.assign(box.style, { left: L + 'px', top: Tp + 'px', width: R - L + 'px', height: Bt - Tp + 'px' });
     pr.sel = new Set(prDrag.base);
     for (const nt of ch.notes) {
-      const nx0 = nt.s * prColW, nx1 = (nt.s + nt.l) * prColW, ny0 = (PR_HIGH - nt.n) * prRowH, ny1 = ny0 + prRowH;
+      const nx0 = nt.s * prColW, nx1 = (nt.s + nt.l) * prColW, ny0 = (nHi(pr.ch) - nt.n) * prRowH, ny1 = ny0 + prRowH;
       if (nx1 > L && nx0 < R && ny1 > Tp && ny0 < Bt) pr.sel.add(nt);
     }
     renderPrNotes();
@@ -2752,11 +2852,11 @@ prGridEl.addEventListener('pointermove', e => {
     prDrag.notes.forEach((nt, i) => { const o = prDrag.orig[i]; nt.l = clamp(o.l + dl, prSnap, state.len - nt.s); });
     renderPrNotes();
   } else if (prDrag.mode === 'move') {
-    const ds = snapRound(step - prDrag.s0), dn = clamp(n, PR_LOW, PR_HIGH) - prDrag.n0;
+    const ds = snapRound(step - prDrag.s0), dn = clamp(n, nLo(pr.ch), nHi(pr.ch)) - prDrag.n0;
     prDrag.notes.forEach((nt, i) => {
       const o = prDrag.orig[i];
       nt.s = clamp(o.s + ds, 0, state.len - prSnap);
-      nt.n = clamp(o.n + dn, PR_LOW, PR_HIGH);
+      nt.n = clamp(o.n + dn, nLo(pr.ch), nHi(pr.ch));
     });
     if (n !== prDrag.lastN) { prDrag.lastN = n; preview(ch, prDrag.notes[0].n); }
     renderPrNotes();
@@ -2793,7 +2893,7 @@ function prKey(e) {
   if (e.code === 'ArrowUp' || e.code === 'ArrowDown') {
     // ↑↓ — на полутон, с Shift — на октаву
     const d = (e.code === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 12 : 1);
-    if ([...sel].some(nt => nt.n + d < PR_LOW || nt.n + d > PR_HIGH)) return true;
+    if ([...sel].some(nt => nt.n + d < nLo(pr.ch) || nt.n + d > nHi(pr.ch))) return true;
     prEdit(() => { for (const nt of sel) nt.n += d; });
     if (!playing) preview(ch, [...sel][0].n);
     return true;
@@ -2941,7 +3041,7 @@ function makeVariant(kind, src) {
     if (isAudio(ch)) continue;
     const d = data[ch.id];
     if (!d) continue;
-    const cat = SOUNDS[ch.sound].cat;
+    const cat = roleOf(SOUNDS[ch.sound]);
     const clear = () => { d.s = Array(MAX).fill(0); d.n = []; };
     if (kind === 'intro' && cat !== 'melody') clear();
     if (kind === 'nokick' && (cat === 'kick' || cat === 'bass')) clear();
@@ -2952,7 +3052,7 @@ function makeVariant(kind, src) {
       const last = [b + 12, b + 13, b + 14, b + 15];
       if (cat === 'kick' || cat === 'open') for (const i of last) d.s[i] = 0;
       if (cat === 'snare' || cat === 'clap') {
-        if (!rollDone && (cat === 'snare' || !state.channels.some(c => SOUNDS[c.sound].cat === 'snare' && !isAudio(c)))) {
+        if (!rollDone && (cat === 'snare' || !state.channels.some(c => roleOf(SOUNDS[c.sound]) === 'snare' && !isAudio(c)))) {
           [1, 1, 2, 4].forEach((v, k) => (d.s[last[k]] = v));
           rollDone = true;
         } else for (const i of last) d.s[i] = 0;
@@ -4806,7 +4906,7 @@ function buildMidi(list) {
         }
       }
     } else {
-      const note = GM_BY_SOUND[ch.sound] || GM_DRUM[snd.cat] || 76;
+      const note = GM_BY_SOUND[ch.sound] || GM_DRUM[roleOf(snd)] || 76;
       for (let g = 0; g < total; g++) {
         for (const [p, i, only] of playingAt(g)) {
           if (only && only !== ch.id) continue;
@@ -4872,7 +4972,7 @@ function flReadme(list, reps, base) {
   let midiTrack = 1;
   const lines = list.map((ch, i) => {
     const n = String(i + 1).padStart(2, '0'), cat = CATS[SOUNDS[ch.sound].cat].name.toLowerCase();
-    const midi = isAudio(ch) ? 'только стем' : `MIDI-дорожка ${midiTrack++}` + (isMel(ch.sound) ? '' : `, нота ${GM_BY_SOUND[ch.sound] || GM_DRUM[SOUNDS[ch.sound].cat] || 76}`);
+    const midi = isAudio(ch) ? 'только стем' : `MIDI-дорожка ${midiTrack++}` + (isMel(ch.sound) ? '' : `, нота ${GM_BY_SOUND[ch.sound] || GM_DRUM[roleOf(SOUNDS[ch.sound])] || 76}`);
     return `${n}  ${chLabel(ch)} — ${cat} (${midi})`;
   });
   return [
@@ -5301,17 +5401,202 @@ window.addEventListener('beforeunload', e => {
   if (takes.length) { e.preventDefault(); e.returnValue = ''; }
 });
 
+// ================= свои звуки: загрузка и хранение =================
+const AUDIO_EXT = /\.(wav|mp3|ogg|oga|flac|m4a|aac|opus|webm|aif|aiff)$/i;
+const sampleTry = new Map();      // id → загрузка (или время неудачи, чтобы не долбить сервер)
+let decodeOff = null;
+const decoder = () => ctx || (decodeOff = decodeOff || new OfflineAudioContext(2, 1, 48000));
+function loadSample(id) {
+  if (sampleBufs.has(id)) return Promise.resolve(true);
+  const was = sampleTry.get(id);
+  if (was instanceof Promise) return was;
+  if (typeof was === 'number' && Date.now() - was < 8000) return Promise.resolve(false);
+  const job = (async () => {
+    let bytes = null;
+    try { const r = await idb('readonly', st => st.get(id), 'sampleData'); bytes = r && r.bytes; } catch (e) {}
+    // звука нет в этом браузере — значит, он из бита напарника: берём с сервера комнаты
+    if (!bytes) try { const r = await fetch('/api/sample?h=' + id.slice(2)); if (r.ok) bytes = await r.arrayBuffer(); } catch (e) {}
+    if (!bytes) return false;
+    sampleBufs.set(id, await decoder().decodeAudioData(bytes.slice(0)));
+    return true;
+  })().catch(() => false).then(ok => { sampleTry.set(id, ok ? true : Date.now()); return ok; });
+  sampleTry.set(id, job);
+  return job;
+}
+async function preloadSamples() {
+  await null;   // после того как весь код страницы загрузился
+  const ids = [...new Set(state.channels.filter(c => isUser(c.sound)).map(c => c.sound))].filter(id => !sampleBufs.has(id));
+  await Promise.all(ids.map(loadSample));
+}
+async function sampleBytes(id) {
+  try { const r = await idb('readonly', st => st.get(id), 'sampleData'); return (r && r.bytes) || null; } catch (e) { return null; }
+}
+async function hashId(bytes) {
+  if (crypto.subtle) {
+    const h = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+    return 'u_' + [...h.slice(0, 8)].map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+  return 'u_' + Array.from({ length: 16 }, () => '0123456789abcdef'[Math.random() * 16 | 0]).join('');
+}
+async function loadLibrary() {
+  try { library = ((await idb('readonly', st => st.getAll(), 'samples')) || []).sort((a, b) => a.folder.localeCompare(b.folder) || a.name.localeCompare(b.name)); } catch (e) { library = []; }
+  for (const sm of library) {
+    const snd = registerSample(sm.id, sm.name, sm.mel, sm.folder);
+    if (snd.mel !== !!sm.mel) setSampleMel(snd, !!sm.mel, false);
+  }
+  if (library.length) buildGrid();
+}
+// files — [{ file, folder }]
+async function importSamples(files) {
+  const list = files.filter(x => AUDIO_EXT.test(x.file.name) || /^audio\//.test(x.file.type));
+  if (!list.length) { toast('Здесь нет звуков: подходят WAV, MP3, OGG, FLAC'); return; }
+  toast(`Загружаю звуки: ${list.length}…`);
+  let added = 0, had = 0, big = 0, bad = 0, lastId = null;
+  for (const { file, folder } of list) {
+    if (file.size > 30e6) { big++; continue; }
+    try {
+      const bytes = await file.arrayBuffer();
+      const buf = await decoder().decodeAudioData(bytes.slice(0));
+      if (buf.duration > 60) { big++; continue; }
+      const id = await hashId(bytes);
+      sampleBufs.set(id, buf);
+      lastId = id;
+      if (library.some(sm => sm.id === id)) { had++; continue; }
+      const name = file.name.replace(/\.[^.]+$/, '').trim().slice(0, 60) || 'Мой звук';
+      const dir = String(folder || 'Без папки').trim().slice(0, 40) || 'Без папки';
+      const meta = { id, name, folder: dir, mel: guessMel(name + ' ' + dir), size: bytes.byteLength, addedAt: Date.now() };
+      await idb('readwrite', st => st.put({ id, bytes }, id), 'sampleData');
+      await idb('readwrite', st => st.put(meta, id), 'samples');
+      library.push(meta);
+      registerSample(id, name, meta.mel, dir);
+      added++;
+    } catch (e) { bad++; }
+  }
+  library.sort((a, b) => a.folder.localeCompare(b.folder) || a.name.localeCompare(b.name));
+  buildGrid(); renderSamples();
+  const parts = [`Добавлено звуков: ${added}`];
+  if (had) parts.push(`уже были: ${had}`);
+  if (big) parts.push(`слишком большие (больше 30 МБ или минуты): ${big}`);
+  if (bad) parts.push(`не прочитались: ${bad}`);
+  toast(parts.join(' · ') + (added ? ' — ищи их в списке звуков канала, сверху' : ''));
+  if (list.length === 1 && lastId && $('#smp').hidden) previewSample(lastId);
+}
+function previewSample(id) {
+  ensureAudio();
+  const snd = SOUNDS[id];
+  loadSample(id).then(ok => { if (ok) playSample(E, snd, ctx.currentTime + 0.01, E.bus, 0.9); });
+}
+// удары ↔ ноты: каналы с этим звуком переводятся сами
+function setSampleMel(snd, mel, store = true) {
+  const chans = state.channels.filter(c => c.sound === snd.id);
+  if (store && chans.length) pushUndo();
+  snd.mel = mel; snd.gate = mel; snd.role = guessRole(snd.name + ' ' + ((library.find(sm => sm.id === snd.id) || {}).folder || ''), mel);
+  for (const ch of chans) { convertChannel(ch, mel, -state.key); ch.smel = mel; }
+  if (!store) return;
+  const meta = library.find(sm => sm.id === snd.id);
+  if (meta) { meta.mel = mel; idb('readwrite', st => st.put(meta, meta.id), 'samples').catch(() => {}); }
+  if (pr && chans.includes(pr.ch) && !mel) closePianoRoll();
+  buildGrid(); save();
+}
+function addSampleChannel(id) {
+  if (state.channels.length >= MAX_CH) { toast(`Каналов уже ${MAX_CH} — больше нельзя`); return; }
+  pushUndo();
+  const ch = newChannel(id);
+  state.channels.push(ch);
+  buildGrid(); save();
+  if (E) applyMix(E, true);
+  previewSample(id);
+  toast(`Канал «${SOUNDS[id].name}» добавлен`);
+}
+async function deleteSample(id) {
+  const meta = library.find(sm => sm.id === id);
+  if (!meta || !window.confirm(`Удалить звук «${meta.name}» из «Мои звуки»? В битах, где он стоит, этот канал замолчит.`)) return;
+  await idb('readwrite', st => st.delete(id), 'samples').catch(() => {});
+  await idb('readwrite', st => st.delete(id), 'sampleData').catch(() => {});
+  library = library.filter(sm => sm.id !== id);
+  buildGrid(); renderSamples();
+}
+function renderSamples() {
+  const box = $('#smpList');
+  if (!box || $('#smp').hidden) return;
+  const q = ($('#smpSearch').value || '').trim().toLowerCase();
+  const list = library.filter(sm => !q || (sm.name + ' ' + sm.folder).toLowerCase().includes(q));
+  box.innerHTML = '';
+  if (!library.length) { box.append(el('div', 'recnote', 'Своих звуков пока нет. Загрузи файлы или папку с паком — или перетащи их в окно.')); return; }
+  if (!list.length) { box.append(el('div', 'recnote', 'Ничего не нашлось.')); return; }
+  let dir = null;
+  for (const sm of list.slice(0, 400)) {
+    if (sm.folder !== dir) { dir = sm.folder; const h = el('div', 'smpdir'); h.textContent = dir; box.append(h); }
+    const snd = SOUNDS[sm.id];
+    const it = el('div', 'smpitem');
+    const pn = el('div', 'pn'); pn.textContent = sm.name;
+    pn.append(el('small', '', (sm.size / 1048576).toFixed(1) + ' МБ'));
+    const play = el('button', 'btn', '▶'); play.title = 'Послушать';
+    play.addEventListener('click', () => previewSample(sm.id));
+    const hit = el('button', 'btn mode' + (snd.mel ? '' : ' on'), 'Удары');
+    hit.title = 'Ставить клетками, как барабан';
+    hit.addEventListener('click', () => { if (snd.mel) { setSampleMel(snd, false); renderSamples(); } });
+    const nts = el('button', 'btn mode' + (snd.mel ? ' on' : ''), 'Ноты');
+    nts.title = 'Играть нотами в пианоролле (C5 — как в файле)';
+    nts.addEventListener('click', () => { if (!snd.mel) { setSampleMel(snd, true); renderSamples(); } });
+    const add = el('button', 'btn primary', '+ В бит'); add.title = 'Новый канал с этим звуком';
+    add.addEventListener('click', () => addSampleChannel(sm.id));
+    const del = el('button', 'ms del', '🗑'); del.title = 'Удалить из «Мои звуки»';
+    del.addEventListener('click', () => deleteSample(sm.id));
+    it.append(pn, play, hit, nts, add, del);
+    box.append(it);
+  }
+  if (list.length > 400) box.append(el('div', 'recnote', `Показаны первые 400 из ${list.length} — уточни поиск.`));
+}
+function openSamples() { closeFx(); $('#smp').hidden = false; renderSamples(); }
+$('#smpBtn').addEventListener('click', openSamples);
+$('#smpClose').addEventListener('click', () => { $('#smp').hidden = true; });
+$('#smpSearch').addEventListener('input', renderSamples);
+$('#smpFiles').addEventListener('click', () => $('#smpFileIn').click());
+$('#smpDir').addEventListener('click', () => $('#smpDirIn').click());
+const lastDir = f => { const parts = (f.webkitRelativePath || '').split('/'); return parts.length > 1 ? parts[parts.length - 2] : ''; };
+$('#smpFileIn').addEventListener('change', e => { importSamples([...e.target.files].map(file => ({ file, folder: 'Загруженные' }))); e.target.value = ''; });
+$('#smpDirIn').addEventListener('change', e => { importSamples([...e.target.files].map(file => ({ file, folder: lastDir(file) }))); e.target.value = ''; });
+// перетаскивание файлов и папок с компьютера (из проводника или браузера FL)
+const entryFiles = (entry, folder) => new Promise(done => {
+  if (entry.isFile) return entry.file(file => done([{ file, folder }]), () => done([]));
+  if (!entry.isDirectory) return done([]);
+  const reader = entry.createReader(), all = [];
+  const next = () => reader.readEntries(async ents => {
+    if (!ents.length) return done(all);
+    for (const en of ents) all.push(...(await entryFiles(en, entry.name)));
+    next();
+  }, () => done(all));
+  next();
+});
+let dragDepth = 0;
+const hasFiles = e => e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+window.addEventListener('dragenter', e => { if (!hasFiles(e)) return; dragDepth++; $('#dropHint').hidden = false; });
+window.addEventListener('dragleave', e => { if (!hasFiles(e)) return; if (--dragDepth <= 0) { dragDepth = 0; $('#dropHint').hidden = true; } });
+window.addEventListener('dragover', e => { if (hasFiles(e)) e.preventDefault(); });
+window.addEventListener('drop', async e => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  dragDepth = 0; $('#dropHint').hidden = true;
+  const items = [...e.dataTransfer.items].map(it => it.webkitGetAsEntry && it.webkitGetAsEntry()).filter(Boolean);
+  const files = items.length ? (await Promise.all(items.map(en => entryFiles(en, en.isDirectory ? en.name : 'Загруженные')))).flat()
+    : [...e.dataTransfer.files].map(file => ({ file, folder: 'Загруженные' }));
+  importSamples(files);
+});
+
 // ================= вокальные каналы =================
 // Голос хранится в IndexedDB браузера (в бите только ссылка на клип), поэтому переживает перезагрузку.
 const clips = new Map();          // id клипа → { data: Float32Array, sr }
 let clipsLoaded = false, dbPromise = null;
 function openDb() {
   if (!dbPromise) dbPromise = new Promise((res, rej) => {
-    const r = indexedDB.open('beatlab', 2);
+    const r = indexedDB.open('beatlab', 3);
     r.onupgradeneeded = () => {
       const db = r.result;
       if (!db.objectStoreNames.contains('clips')) db.createObjectStore('clips');
       if (!db.objectStoreNames.contains('projects')) db.createObjectStore('projects');
+      if (!db.objectStoreNames.contains('samples')) db.createObjectStore('samples');
+      if (!db.objectStoreNames.contains('sampleData')) db.createObjectStore('sampleData');
     };
     r.onsuccess = () => res(r.result);
     r.onerror = () => rej(r.error);
@@ -5577,7 +5862,8 @@ window.beatlab = {
 // для комнат баттлов (battle.js): загрузка бита без истории отмен, чтобы Ctrl+Z не вернул бит из-за пределов матча
 Object.defineProperties(window.beatlab, Object.getOwnPropertyDescriptors({
   start, stop, ensureAudio, enableMic, toast, uid,
-  get ctx() { return ctx; }, get mic() { return mic; }, get project() { return curProject; },
+  get ctx() { return ctx; }, get mic() { return mic; }, get project() { return curProject; }, get library() { return library; },
+  sampleBytes, loadSample, isUser, importSamples,
   load(json, project = null) {
     if (playing) stop();
     state = normalize(typeof json === 'string' ? JSON.parse(json) : json);
@@ -5604,6 +5890,7 @@ Object.defineProperties(window.beatlab, Object.getOwnPropertyDescriptors({
 rebuildAll();
 draw();
 loadClips().then(pruneClips);
+loadLibrary();
 if (openedFromLink) {
   history.replaceState(null, '', location.pathname + location.search);
   save();

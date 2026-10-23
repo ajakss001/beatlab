@@ -168,18 +168,33 @@ function beatJson() {
   if (o.song && Array.isArray(o.song.clips)) o.song.clips = o.song.clips.filter(c => c.a === undefined);
   return JSON.stringify(o);
 }
-function sendBeat(final) {
+async function sendBeat(final) {
   const j = beatJson();
   if (!final && j === lastSent) return;
   lastSent = j;
+  await shareSamples(j);
   send('beat', { json: j, final });
+}
+// свои звуки бита — на сервер (один раз за сессию), чтобы напарник-рэпер их услышал
+const shared = new Set();
+async function shareSamples(j) {
+  if (!room || room.roles.length < 2) return;
+  const ids = [...new Set((JSON.parse(j).channels || []).map(c => c.sound).filter(B.isUser))].filter(id => !shared.has(id));
+  for (const id of ids) {
+    const bytes = await B.sampleBytes(id);
+    if (!bytes) continue;
+    try {
+      const r = await fetch(`/api/sample?pid=${pid}&h=${id.slice(2)}`, { method: 'POST', body: bytes });
+      if (r.ok) shared.add(id);
+    } catch (e) {}
+  }
 }
 function onBeat(b) {
   const s = mySeat();
   if (!s || b.team !== s.team || s.role !== 'rap') return;
   teammateBeat = { ...b, at: Date.now() };
-  // финальная версия пришла, пока бит разгоняется перед читкой — переставляем
-  if (perf && now() < (phase.rapAt || 0) && perf.beatV !== b.v) { perf.beatV = b.v; B.load(b.json); playBeat(); }
+  // финальная версия пришла во время «приготовься» — подменяем, бит ещё не играет
+  if (perf && !perf.on && perf.beatV !== b.v) { perf.beatV = b.v; B.load(b.json); }
   render();
 }
 function playBeat() {
@@ -198,16 +213,23 @@ function startPerformance(p) {
   lim.threshold.value = -3; lim.knee.value = 0; lim.ratio.value = 20; lim.attack.value = 0.002; lim.release.value = 0.12;
   bus.connect(lim).connect(dest);
   B.E.master.connect(bus);
-  perf = { p, dest, bus, mic: null, pcs: new Map(), chunks: [], rec: null, beatV: teammateBeat && teammateBeat.v };
-  const mime = pickMime(['audio/webm;codecs=opus', 'audio/webm']);
-  try {
-    const rec = new MediaRecorder(dest.stream, mime ? { mimeType: mime, audioBitsPerSecond: 192000 } : {});
-    rec.ondataavailable = e => { if (e.data.size) perf && perf.rec === rec ? perf.chunks.push(e.data) : null; };
-    rec.start(1000);
-    perf.rec = rec;
-  } catch (e) {}
-  playBeat();
+  perf = { p, dest, bus, mic: null, pcs: new Map(), chunks: [], rec: null, beatV: teammateBeat && teammateBeat.v, on: false, go: 0 };
   const cur = perf;
+  // пока идёт «приготовься», бит молчит: бит и запись читки стартуют вместе с таймером читки
+  const go = () => {
+    if (perf !== cur) return;
+    const mime = pickMime(['audio/webm;codecs=opus', 'audio/webm']);
+    try {
+      const rec = new MediaRecorder(dest.stream, mime ? { mimeType: mime, audioBitsPerSecond: 192000 } : {});
+      rec.ondataavailable = e => { if (e.data.size) perf && perf.rec === rec ? perf.chunks.push(e.data) : null; };
+      rec.start(1000);
+      cur.rec = rec;
+    } catch (e) {}
+    cur.on = true;
+    playBeat();
+    render();
+  };
+  cur.go = setTimeout(go, Math.max(0, (p.rapAt || 0) - now()));
   (B.mic ? Promise.resolve(true) : B.enableMic()).then(ok => {
     if (perf !== cur) return;
     if (ok && B.mic) { cur.mic = B.ctx.createMediaStreamSource(B.mic.stream); cur.mic.connect(cur.bus); }
@@ -221,6 +243,7 @@ function stopPerformance() {
   const p = perf;
   if (!p) return;
   perf = null;
+  clearTimeout(p.go);
   if (B.playing) B.stop();
   for (const pc of p.pcs.values()) pc.close();
   if (p.mic) p.mic.disconnect();
@@ -514,7 +537,7 @@ const body = ov.querySelector('.btbody');
 
 const RULES = `<h3>Правила</h3>
   <div class="btnote" style="margin:0">Матч из 3 раундов, в каждом раунде новый бит с нуля. На бит — 5 минут.
-  Выступление команды — до 1:30: 15 секунд бит разгоняется, потом 75 секунд читки по таймеру.
+  Выступление команды: 10 секунд приготовиться, потом бит и 75 секунд читки по таймеру.
   Команды выходят по очереди, в каждом раунде первой выступает другая. После раунда голосует жюри — все в комнате, кто не играет.
   Побеждает тот, кто взял больше раундов. Пока делаешь бит, пишется экран, читка пишется звуком — после матча всё остаётся в комнате.
   Читай в наушниках, иначе бит из колонок попадёт в микрофон.</div>`;
@@ -604,7 +627,7 @@ function stageHtml(m) {
   const p = m.performer, mine = p === pid;
   let note;
   if (!p) note = 'Выступающий не на месте';
-  else if (mine) note = perf && perf.mic ? 'Ты на сцене. Бит играет у тебя, вся комната слышит бит и твой голос.' : 'Ты на сцене. Микрофон не включён — комната слышит только бит.';
+  else if (mine) note = perf && !perf.on ? 'Приготовься: бит включится вместе с таймером читки.' : perf && perf.mic ? 'Ты на сцене. Бит играет у тебя, вся комната слышит бит и твой голос.' : 'Ты на сцене. Микрофон не включён — комната слышит только бит.';
   else note = !listen ? '' : listen.got ? (listen.blocked ? 'Браузер не дал включить звук сам' : 'Звук идёт') : 'Подключаемся к выступающему…';
   return `<div class="btcard btstage t${m.team}">
     <h3>На сцене · ${TEAM[m.team]}${mine ? ' · это ты' : ''}</h3>

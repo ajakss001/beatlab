@@ -17,13 +17,17 @@ const TYPES = {
 // ================= игроки и комнаты =================
 const clients = new Map();   // pid → { pid, nick, color, res (SSE-поток или null), room, offAt }
 const rooms = new Map();     // код → комната
+// свои звуки из битов (в памяти, самые давние вытесняются)
+const samples = new Map();   // начало SHA-256 → Buffer
+const SAMPLES_LIMIT = +process.env.SAMPLES_LIMIT || 150e6;
+let samplesSize = 0;
 
 // режимы: места в каждой команде; both — сам делает бит и сам читает
 const MODES = { '1v1': ['both'], '2v2': ['beat', 'rap'] };
 // длительности фаз, секунды (тест — чтобы быстро прогнать весь матч)
 const TIMES = test => test
   ? { prep: 4, beat: 30, intro: 5, rap: 15, vote: 12 }
-  : { prep: 8, beat: 300, intro: 15, rap: 75, vote: 30 };
+  : { prep: 8, beat: 300, intro: 10, rap: 75, vote: 30 };
 
 const clean = (s, n) => String(s == null ? '' : s).replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, n);
 const okColor = c => (/^#[0-9a-f]{6}$/i.test(c) ? c : '#ff3d6e');
@@ -292,6 +296,29 @@ async function api(req, res, url) {
     const r = rooms.get(c.room);
     if (!['nick', 'create', 'join', 'leave'].includes(d.t) && !r) return json(res, 400, { err: 'Ты не в комнате' });
     try { return json(res, 200, { ok: true, ...(h(c, d, r) || {}) }); } catch (e) { return json(res, 400, { err: e.message }); }
+  }
+  if (url.pathname === '/api/sample') {
+    // свои звуки битмейкера: в 2 на 2 бит играет у рэпера, и ему нужны те же сэмплы
+    const h = String(q.get('h') || '');
+    if (!/^[0-9a-f]{16}$/.test(h)) return json(res, 400, { err: 'bad sample' });
+    if (req.method === 'GET') {
+      const b = samples.get(h);
+      if (!b) return json(res, 404, { err: 'Звука нет на сервере' });
+      samples.delete(h); samples.set(h, b);   // недавно нужные — в конец очереди на удаление
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'private, max-age=86400' });
+      return res.end(b);
+    }
+    if (req.method !== 'POST') return json(res, 405, { err: 'POST' });
+    const c = clients.get(q.get('pid'));
+    if (!c || !rooms.get(c.room)) return json(res, 400, { err: 'Ты не в комнате' });
+    if (samples.has(h)) return json(res, 200, { ok: true });
+    let body;
+    try { body = await readBody(req, 30e6); } catch (e) { return json(res, 413, { err: e.message }); }
+    // id звука — начало SHA-256 файла: подменить чужой звук нельзя
+    if (crypto.createHash('sha256').update(body).digest('hex').slice(0, 16) !== h) return json(res, 400, { err: 'Файл не совпал' });
+    samples.set(h, body); samplesSize += body.length;
+    for (const [k, b] of samples) { if (samplesSize <= SAMPLES_LIMIT) break; samples.delete(k); samplesSize -= b.length; }
+    return json(res, 200, { ok: true });
   }
   if (url.pathname === '/api/upload' && req.method === 'POST') {
     // запись экрана / читки после фазы — сохраняем на память в records/<комната>/
