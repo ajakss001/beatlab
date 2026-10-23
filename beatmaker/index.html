@@ -237,6 +237,26 @@
   .projitem .pn b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .projitem .pn small{color:var(--mute)}
 
+  /* настройки канала */
+  .chsbox{width:min(920px,100%)}
+  .chsec{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-top:10px}
+  .chsec h4{margin:0 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute)}
+  .chtop{display:grid;grid-template-columns:1fr 1fr;gap:6px 18px;align-items:center}
+  .chbtns{grid-column:1/-1;display:flex;gap:8px}
+  .chbtns .btn{min-width:90px}
+  .chtop .fxparam{margin:0}
+  .chwave canvas{width:100%;height:140px;display:block;border-radius:8px}
+  .chk{display:flex;gap:8px;align-items:center;font-size:13px;margin:4px 0;cursor:pointer}
+  .chchecks{display:grid;grid-template-columns:1fr 1fr;gap:2px 14px;margin-bottom:6px}
+  .chsec select.snd{width:100%;margin-bottom:6px}
+  /* дисплей сверху: часы трека и спектр */
+  .tdisp{display:flex;gap:10px;align-items:center;background:#0b0b12;border:1px solid var(--line);border-radius:10px;padding:6px 10px}
+  .tclock{display:flex;flex-direction:column;font-family:ui-monospace,Consolas,monospace;min-width:118px}
+  #tTime{font-size:24px;color:#c6ff3d;font-weight:700;letter-spacing:.04em}
+  #tBar{color:var(--mute);font-size:12px}
+  #tSpec{width:240px;height:48px;display:block}
+  #stopAll{align-self:center}
+
   /* мои звуки */
   .smpbox{width:min(760px,100%)}
   .smpdir{margin:14px 0 4px;color:var(--mute);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
@@ -293,6 +313,11 @@
 
   <section class="panel transport">
     <button id="play" class="play" title="Старт / стоп (пробел)">▶</button>
+    <button id="stopAll" class="btn" title="Остановить весь звук: бит, лупы, превью">⏹ Тишина</button>
+    <div class="tdisp" title="Время трека · такт:доля:шаг · спектр — какие частоты звучат">
+      <div class="tclock"><span id="tTime">0:00:00</span><small id="tBar">1:1:1</small></div>
+      <canvas id="tSpec" width="240" height="48"></canvas>
+    </div>
     <div class="ctl">
       <span class="t">Режим</span>
       <div class="seg" id="mode">
@@ -472,6 +497,8 @@
         </select>
       </label>
       <label>Масштаб <button id="prZoomOut" class="ms">−</button><button id="prZoomIn" class="ms">+</button></label>
+      <label>Мелодия <select id="prGen" title="Что написать"></select></label>
+      <button id="prGenBtn" class="btn" title="Написать мелодию по теории музыки — каждый раз новую">✨ Написать мелодию</button>
       <span class="spacer"></span>
       <button id="prClear" class="btn">Очистить</button>
       <button id="prClose" class="btn primary">Готово</button>
@@ -523,6 +550,15 @@
     <div class="projrow"><input id="projName" type="text" class="txt" maxlength="40" placeholder="Название бита"><button id="projSaveNew" class="btn primary">Сохранить как новый</button></div>
     <div id="projList"></div>
     <div class="projrow"><button id="projNew" class="btn">✚ Новый пустой бит</button></div>
+  </div>
+</div>
+
+<!-- настройки канала со своим звуком -->
+<div id="chs" class="modal" hidden>
+  <div class="projbox chsbox">
+    <div class="drawhead"><span class="ttl">⚙ <span id="chsTitle"></span></span><span class="spacer"></span><button id="chsPlay" class="btn">▶ Послушать</button><button id="chsClose" class="btn primary">Готово</button></div>
+    <div class="recnote">Как Channel settings во FL. Двойной клик по ползунку — сброс. Всё сохраняется в бите и работает в экспорте.</div>
+    <div id="chsBody"></div>
   </div>
 </div>
 
@@ -934,16 +970,21 @@ const ROLE_RX = {
   perc: /perc|rim|conga|bongo|cowbell|tamb|clave|block|перк/i, perc2: word('tom|toms'),
   bass: /808|bass|бас/i, bass2: word('sub|reese'),
 };
-const MELISH = /808|bass|key|piano|pluck|lead|synth|melod|pad|bell|guitar|chord|string|flute|brass|choir|organ|arp|vox|бас|мелод|пиан|гитар|аккорд|синт|ключ/i;
+const MELISH = /key|piano|pluck|lead|synth|melod|pad|bell|guitar|chord|string|flute|brass|choir|organ|arp|vox|vocal|мелод|пиан|гитар|аккорд|синт|ключ/i;
 const has = (t, k) => ROLE_RX[k].test(t) || (ROLE_RX[k + '2'] ? ROLE_RX[k + '2'].test(t) : false);
 const drumRole = t => ['kick', 'snare', 'clap', 'open', 'hat', 'perc'].find(k => has(t, k)) || null;
-// сначала название файла, потом папка («Kicks/808 Kick.wav» — бочка, «808s/Dark.wav» — бас)
-const guessMel = (name, folder = '') => { const d = drumRole(name); if (d) return false; return MELISH.test(name) || has(name, 'bass') || (!drumRole(folder) && (MELISH.test(folder) || has(folder, 'bass'))); };
-function guessRole(name, folder, mel) {
-  if (mel) return has(name, 'bass') || (!MELISH.test(name) && has(folder, 'bass')) ? 'bass' : 'melody';
-  return drumRole(name) || drumRole(folder) || 'fx';
+const LOOPISH = /loop|лууп|луп/i;
+// роль — по названию файла, потом по папке; от режима «Удары/Ноты» не зависит (бочка в пианоролле — всё равно бочка)
+function guessRole(name, folder) {
+  const d = drumRole(name);
+  if (d) return d;
+  if (has(name, 'bass')) return 'bass';
+  if (MELISH.test(name)) return 'melody';
+  return drumRole(folder) || (has(folder, 'bass') ? 'bass' : MELISH.test(folder) ? 'melody' : 'fx');
 }
-// тональность из названия: «808 Dark F#», «Bass_C#m», «Keys (Gb min)» → 0–11 (до — 0); нет — звук считается в до
+// нотами играются 808, бас и мелодические звуки; лупы — всегда «удары» (ставятся в начало такта)
+const guessMel = (name, folder = '', loop = false) => !loop && ['bass', 'melody'].includes(guessRole(name, folder));
+// тональность из названия: «808 Dark F#», «Bass_C#m», «Keys (Gb min)», «808 [C]» → 0–11 (до — 0)
 const NOTE_PC = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
 function guessRoot(name) {
   const rx = /(?:^|[\s_\-\(\[.,])([A-G])(#|♯|b|♭|sharp|flat)?\s?(?:m|min|minor|maj|major|dur|moll)?(?=$|[\s_\-\)\].,\d])/g;
@@ -951,39 +992,190 @@ function guessRoot(name) {
   while ((m = rx.exec(name))) pc = (NOTE_PC[m[1]] + (m[2] && /#|♯|sharp/.test(m[2]) ? 1 : m[2] ? -1 : 0) + 12) % 12;
   return pc;
 }
-const leadish = t => /lead|pluck|bell|flute|whistle|arp|melod|vox|мелод|лид/i.test(t);
-function registerSample(id, name, mel, folder = '', root = null) {
+const leadish = t => /lead|pluck|bell|flute|whistle|arp|melod|vox|vocal|мелод|лид/i.test(t);
+// info: { name, folder, mel, root, loop, beats, an }
+function registerSample(id, info = {}) {
   const old = SOUNDS[id];
   if (old) return old;
-  name = String(name || 'Мой звук').slice(0, 60);
-  mel = !!mel;
+  const name = String(info.name || 'Мой звук').slice(0, 60), folder = String(info.folder || '');
   return (SOUNDS[id] = {
-    id, cat: 'user', name, folder, oct: 3, user: true, mel, gate: mel, layers: [], role: guessRole(name, folder, mel),
-    root: Number.isInteger(root) ? clamp(root, 0, 11) : (guessRoot(name) ?? 0), lead: leadish(name + ' ' + folder),
-    play: (e, t, out, v, f, gf, gate) => playSample(e, SOUNDS[id], t, out, v, f, gf, gate),
+    id, cat: 'user', name, folder, oct: 3, user: true, mel: !!info.mel, gate: !!info.mel, layers: [], role: guessRole(name, folder),
+    root: Number.isInteger(info.root) ? clamp(info.root, 0, 11) : (guessRoot(name) ?? 0), lead: leadish(name + ' ' + folder),
+    loop: !!info.loop, beats: info.beats || 4, an: info.an || null,
+    play: (e, t, out, v, f, gf, gate, ch) => playSample(e, SOUNDS[id], t, out, v, f, gf, gate, ch),
   });
 }
+
+// ================= сэмплер канала (как Channel settings → Sampler во FL) =================
+// pitch — полутоны (Time stretching → PITCH), tune — верхняя ручка PITCH в пределах range, time — растянуть на N долей (Resample),
+// start/len — SMP START/LENGTH в %, offset — START OFFSET, fin/fout — IN/OUT (мс), xfade — CROSSFADE петли (мс), trim — TRIM (0 — выкл)
+const SMP_DEF = {
+  cut: false, noteCut: true, tune: 0, range: 2, pitch: 0, time: 0, mul: 100, offset: 0, start: 0, len: 100, fin: 0, fout: 0, xfade: 0, trim: 0,
+  rev: false, pol: false, norm: false, dc: false, swap: false, fstereo: false, loop: false, ping: false, declick: 'out',
+};
+const DECLICK = { none: [0, 0], out: [0, 0.003], tr: [0.0005, 0.003], generic: [0.002, 0.012], smooth: [0.008, 0.03] };
+function smpDefaults(snd) {
+  const s = { ...SMP_DEF };
+  if (snd && snd.user) {
+    s.noteCut = snd.mel;
+    if (snd.loop) { s.cut = true; s.time = snd.beats; s.noteCut = false; }
+    if (snd.role === 'bass') s.cut = true;
+  }
+  return s;
+}
+function normSmp(src, snd) {
+  const s = smpDefaults(snd);
+  if (!src || typeof src !== 'object') return s;
+  const num = (k, a, b) => { if (typeof src[k] === 'number' && isFinite(src[k])) s[k] = clamp(src[k], a, b); };
+  num('tune', -48, 48); num('range', 1, 48); num('pitch', -24, 24); num('time', 0, 64); num('mul', 25, 400); num('offset', 0, 99);
+  num('start', 0, 99); num('len', 1, 100); num('fin', 0, 3000); num('fout', 0, 3000); num('xfade', 0, 500); num('trim', 0, 100);
+  for (const k of ['cut', 'noteCut', 'rev', 'pol', 'norm', 'dc', 'swap', 'fstereo', 'loop', 'ping']) if (typeof src[k] === 'boolean') s[k] = src[k];
+  if (DECLICK[src.declick]) s.declick = src.declick;
+  return s;
+}
+// обработка «Precomputed effects»: считается один раз и кэшируется на канал
+const procCache = new Map();
+const PROC_KEYS = ['start', 'len', 'fin', 'fout', 'xfade', 'trim', 'rev', 'pol', 'norm', 'dc', 'swap', 'fstereo', 'loop', 'ping'];
+function sampleFor(ch) {
+  const raw = sampleBufs.get(ch.sound);
+  if (!raw) return null;
+  const s = ch.smp;
+  if (!s || PROC_KEYS.every(k => s[k] === SMP_DEF[k])) return raw;
+  const key = PROC_KEYS.map(k => s[k]).join('|');
+  const c = procCache.get(ch.id);
+  if (c && c.key === key && c.raw === raw) return c.buf;
+  const buf = processSample(raw, s);
+  procCache.set(ch.id, { key, raw, buf });
+  return buf;
+}
+function processSample(raw, s) {
+  const sr = raw.sampleRate;
+  let chs = [];
+  for (let k = 0; k < Math.min(2, raw.numberOfChannels); k++) chs.push(raw.getChannelData(k).slice());
+  if ((s.swap || s.fstereo) && chs.length === 1) chs.push(chs[0].slice());
+  if (s.dc) for (const d of chs) { let m = 0; for (let i = 0; i < d.length; i++) m += d[i]; m /= d.length || 1; for (let i = 0; i < d.length; i++) d[i] -= m; }
+  // SMP START / LENGTH — какой кусок файла звучит
+  const total = chs[0].length;
+  let a = Math.floor(total * s.start / 100), b = Math.min(total, a + Math.max(1, Math.round(total * s.len / 100)));
+  // TRIM — срезать тишину в начале и в конце (порог от −80 до −20 дБ)
+  if (s.trim > 0) {
+    const thr = Math.pow(10, (-80 + s.trim * 0.6) / 20);
+    const loud = i => chs.some(d => Math.abs(d[i]) > thr);
+    while (a < b - 1 && !loud(a)) a++;
+    while (b - 1 > a && !loud(b - 1)) b--;
+  }
+  chs = chs.map(d => d.slice(a, b));
+  const n = chs[0].length;
+  if (s.rev) for (const d of chs) d.reverse();
+  if (s.pol) for (const d of chs) for (let i = 0; i < n; i++) d[i] = -d[i];
+  if (s.swap && chs.length > 1) chs = [chs[1], chs[0]];
+  // Fade stereo — звук плавно переезжает из левого канала в правый
+  if (s.fstereo && chs.length > 1) for (let i = 0; i < n; i++) { const p = i / n * Math.PI / 2; chs[0][i] *= Math.cos(p); chs[1][i] *= Math.sin(p); }
+  const fi = Math.min(n, Math.round(s.fin / 1000 * sr)), fo = Math.min(n, Math.round(s.fout / 1000 * sr));
+  for (const d of chs) {
+    for (let i = 0; i < fi; i++) d[i] *= i / fi;
+    for (let i = 0; i < fo; i++) d[n - 1 - i] *= i / fo;
+  }
+  if (s.norm) {
+    let pk = 0;
+    for (const d of chs) for (let i = 0; i < n; i++) pk = Math.max(pk, Math.abs(d[i]));
+    if (pk > 1e-6) { const k = 0.98 / pk; for (const d of chs) for (let i = 0; i < n; i++) d[i] *= k; }
+  }
+  // петля: пинг-понг (туда и обратно) и кроссфейд на стыке, чтобы не щёлкало
+  if (s.loop && s.ping && n > 2) chs = chs.map(d => { const o = new Float32Array(n * 2 - 2); o.set(d); for (let i = 1; i < n - 1; i++) o[n - 1 + i] = d[n - 1 - i]; return o; });
+  if (s.loop && s.xfade > 0) {
+    const len = chs[0].length, x = Math.min(Math.floor(len / 2), Math.round(s.xfade / 1000 * sr));
+    for (const d of chs) for (let i = 0; i < x; i++) { const w = i / x; d[len - x + i] = d[len - x + i] * (1 - w) + d[i] * w; }
+  }
+  const out = new AudioBuffer({ length: Math.max(1, chs[0].length), numberOfChannels: chs.length, sampleRate: sr });
+  chs.forEach((d, k) => out.copyToChannel(d, k));
+  return out;
+}
 // сэмпл звучит как есть на своей ноте (как «root note» в сэмплере FL; по умолчанию C5), выше и ниже — быстрее и медленнее
-function playSample(eng, snd, t, out, vel, f, glideFrom, gate) {
-  const buf = sampleBufs.get(snd.id);
+function playSample(eng, snd, t, out, vel, f, glideFrom, gate, ch) {
+  const s = (ch && ch.smp) || SMP_DEF;
+  const buf = ch ? sampleFor(ch) : sampleBufs.get(snd.id);
   if (!buf) { loadSample(snd.id); return { gs: [], end: t }; }
   const c = eng.c, src = c.createBufferSource(), g = c.createGain();
   src.buffer = buf;
-  const base = mtof(60 + (snd.root || 0)), rate = f ? f / base : 1;
-  if (glideFrom) { src.playbackRate.setValueAtTime(glideFrom / base, t); src.playbackRate.exponentialRampToValueAtTime(rate, t + 0.09); }
+  const base = mtof(60 + (snd.root || 0));
+  let k = Math.pow(2, (s.pitch + s.tune) / 12);
+  // Time stretching (Resample): весь звук укладывается в N долей текущего темпа — так лупы встают в бит
+  if (s.time > 0) k *= (buf.duration / (s.loop && s.ping ? 2 : 1)) / (s.time * s.mul / 100 * 60 / state.bpm);
+  const rate = clamp((f ? f / base : 1) * k, 1 / 64, 64);
+  if (glideFrom) { src.playbackRate.setValueAtTime(clamp(glideFrom / base * k, 1 / 64, 64), t); src.playbackRate.exponentialRampToValueAtTime(rate, t + 0.09); }
   else src.playbackRate.value = rate;
-  g.gain.value = vel;
-  src.connect(g).connect(out);
-  let end = t + buf.duration / rate;
-  if (gate && snd.mel && t + gate < end) {
-    // нота кончилась — сэмпл быстро затухает, как в сэмплере FL
-    g.gain.setValueAtTime(vel, t + gate);
-    g.gain.linearRampToValueAtTime(0, t + gate + 0.04);
-    end = t + gate + 0.04;
+  const off = buf.duration * s.offset / 100;
+  const [dIn, dOut] = DECLICK[s.declick] || DECLICK.out;
+  if (s.loop) src.loop = true;
+  let end = s.loop ? t + Math.max(gate || stepDur(), 0.02) : t + (buf.duration - off) / rate;
+  // нота кончилась раньше звука — обрезаем (у «нот» по умолчанию, у «ударов» звук доигрывает до конца)
+  const cutAt = gate && (ch ? s.noteCut : snd.mel) ? t + gate : null;
+  let early = s.loop;
+  if (cutAt && cutAt < end) { end = cutAt; early = true; }
+  g.gain.setValueAtTime(dIn ? 0 : vel, t);
+  if (dIn) g.gain.linearRampToValueAtTime(vel, t + dIn);
+  if (early) {
+    const r = Math.max(dOut, 0.01);
+    g.gain.setValueAtTime(vel, Math.max(t + dIn, end));
+    g.gain.linearRampToValueAtTime(0, end + r);
+    end += r;
+  } else if (dOut && end - dOut > t + dIn) {
+    g.gain.setValueAtTime(vel, end - dOut);
+    g.gain.linearRampToValueAtTime(0, end);
   }
-  src.start(t);
+  src.connect(g).connect(out);
+  src.start(t, off);
   src.stop(end + 0.02);
-  return { gs: [g], end };
+  const v = { gs: [g], end, src };
+  // Cut itself: новая нота канала глушит прошлую (808 не наслаивается, луп не играет сам на себя)
+  if (ch && s.cut) { choke(eng, 'cut:' + ch.id, t, 0.006); eng.voices['cut:' + ch.id] = v; }
+  eng.poly.push(v);
+  return v;
+}
+
+// ================= часы трека и спектр (как дисплей FL сверху) =================
+let specAn = null, specData = null, specPeaks = null;
+const fmtClock = sec => { const m = Math.floor(sec / 60), s = Math.floor(sec % 60), cs = Math.floor(sec * 100 % 100); return `${m}:${String(s).padStart(2, '0')}:${String(cs).padStart(2, '0')}`; };
+function drawTransport(g, frac) {
+  const pos = g >= 0 ? (g + frac) * stepDur() : 0;
+  $('#tTime').textContent = fmtClock(pos);
+  const st = g >= 0 ? g : 0;
+  $('#tBar').textContent = `${Math.floor(st / 16) + 1}:${Math.floor(st % 16 / 4) + 1}:${st % 4 + 1}`;
+  const cv = $('#tSpec'), c2 = cv.getContext('2d'), W = cv.width, H = cv.height;
+  c2.clearRect(0, 0, W, H);
+  if (!specAn && ctx && E) { specAn = ctx.createAnalyser(); specAn.fftSize = 2048; specAn.smoothingTimeConstant = 0.75; E.master.connect(specAn); }
+  if (!specAn) return;
+  if (!specData) { specData = new Uint8Array(specAn.frequencyBinCount); specPeaks = new Float32Array(48); }
+  specAn.getByteFrequencyData(specData);
+  // полосы по октавам, как в анализаторе: от 30 Гц до 16 кГц
+  const N = 48, ny = ctx.sampleRate / 2, bw = W / N;
+  for (let k = 0; k < N; k++) {
+    const f0 = 30 * Math.pow(16000 / 30, k / N), f1 = 30 * Math.pow(16000 / 30, (k + 1) / N);
+    const i0 = Math.floor(f0 / ny * specData.length), i1 = Math.max(i0 + 1, Math.ceil(f1 / ny * specData.length));
+    let v = 0;
+    for (let i = i0; i < i1 && i < specData.length; i++) v = Math.max(v, specData[i]);
+    v /= 255;
+    specPeaks[k] = Math.max(v, specPeaks[k] - 0.012);
+    const h = v * H, hue = 120 - v * 120;
+    c2.fillStyle = `hsl(${hue},90%,55%)`;
+    c2.fillRect(k * bw + 1, H - h, bw - 2, h);
+    c2.fillStyle = '#ffffffaa';
+    c2.fillRect(k * bw + 1, H - specPeaks[k] * H - 2, bw - 2, 2);
+  }
+}
+// полная тишина: стоп бита, превью, дублей — всё, что звучит
+function stopAll() {
+  if (playing) stop();
+  if (typeof stopTake === 'function' && takePlaying) stopTake();
+  stopAudioPreview();
+  if (E) {
+    const now = ctx.currentTime;
+    for (const k in E.voices) choke(E, k, now, 0.01);
+    for (const v of E.poly) { chokeVoice(v, now, 0.01); if (v.src) try { v.src.stop(now + 0.05); } catch (e) {} }
+    E.poly = [];
+  }
+  toast('Тишина: весь звук остановлен');
 }
 
 // ================= эффекты (аналоги популярных плагинов) =================
@@ -1543,7 +1735,7 @@ function parsePattern(str) {
 function newChannel(sound) {
   const ch = { id: uid(), sound, steps: Array(MAX).fill(0), notes: [], vol: CATS[SOUNDS[sound].cat].vol, pan: 0, mute: false, solo: false, fx: [] };
   if (SOUNDS[sound].wave) ch.synth = synthFor(sound);
-  if (SOUNDS[sound].user) { ch.sname = SOUNDS[sound].name; ch.smel = SOUNDS[sound].mel; ch.sroot = SOUNDS[sound].root; }
+  if (SOUNDS[sound].user) { const u = SOUNDS[sound]; Object.assign(ch, { sname: u.name, smel: u.mel, sroot: u.root, sloop: u.loop, sbeats: u.beats, smp: smpDefaults(u) }); }
   return ch;
 }
 function baseState() {
@@ -1636,7 +1828,7 @@ function normalize(src) {
   const seen = new Set(), idMap = new Map();  // старый id канала → канал (нужно, чтобы найти его данные в паттернах)
   for (const c of chans) {
     if (b.channels.length >= MAX_CH) break;
-    if (c && isUser(c.sound)) registerSample(c.sound, c.sname, c.smel, '', Number.isInteger(c.sroot) ? c.sroot : null);
+    if (c && isUser(c.sound)) registerSample(c.sound, { name: c.sname, mel: c.smel, root: Number.isInteger(c.sroot) ? c.sroot : null, loop: !!c.sloop, beats: typeof c.sbeats === 'number' ? clamp(c.sbeats, 1, 64) : 4 });
     if (!c || !SOUNDS[c.sound]) continue;
     const ch = newChannel(c.sound);
     if (typeof c.id === 'string' && /^c\w{1,12}$/.test(c.id) && !seen.has(c.id)) ch.id = c.id;
@@ -1658,6 +1850,7 @@ function normalize(src) {
     if (typeof c.pan === 'number' && isFinite(c.pan)) ch.pan = clamp(c.pan, -1, 1);
     ch.mute = !!c.mute; ch.solo = !!c.solo;
     ch.fx = normalizeFx(c.fx);
+    if (SOUNDS[c.sound].user) ch.smp = normSmp(c.smp, SOUNDS[c.sound]);
     if (SOUNDS[c.sound].wave) ch.synth = normSynth(c.synth, c.sound);
     b.channels.push(ch);
   }
@@ -1887,6 +2080,7 @@ function chokeVoice(v, t, tc) {
     if (p.cancelAndHoldAtTime) p.cancelAndHoldAtTime(t); else p.cancelScheduledValues(t);
     p.setTargetAtTime(0, t, tc);
   }
+  if (v.src) try { v.src.stop(t + tc * 8 + 0.02); } catch (e) {}
 }
 function choke(eng, key, t, tc = 0.01) {
   const v = eng.voices[key];
@@ -1894,8 +2088,8 @@ function choke(eng, key, t, tc = 0.01) {
   chokeVoice(v, t, tc);
 }
 
-function playDrum(eng, snd, t, out, vel) {
-  if (snd.user) { playSample(eng, snd, t, out, vel); return; }
+function playDrum(eng, snd, t, out, vel, ch) {
+  if (snd.user) { playSample(eng, snd, t, out, vel, null, null, ch && ch.smp && ch.smp.loop ? stepDur() : null, ch); return; }
   if (snd.chokes || snd.group) choke(eng, 'open', t, 0.008);
   const gs = [];
   let end = t;
@@ -1914,10 +2108,10 @@ function playMelodic(eng, ch, t, out, vel, n, gate) {
     const glideFrom = state.glide && prev && t < prev.end && prev.f !== f ? prev.f : null;
     choke(eng, key, t, 0.012);
     const v = snd.play(eng, t, out, vel, f, glideFrom, gate, ch);
-    eng.voices[key] = { gs: v.gs, end: v.end, f };
+    eng.voices[key] = { gs: v.gs, end: v.end, f, src: v.src };
   } else {
     const v = snd.play(eng, t, out, vel, f, null, gate, ch);
-    eng.poly.push(v);
+    if (!snd.user) eng.poly.push(v);   // свои звуки сами встают в список звучащих
   }
 }
 function duckAll(eng, t) {
@@ -1949,7 +2143,7 @@ function scheduleStep(eng, i, t, pat, only = null) {
     if (!v) continue;
     for (let k = 0; k < v; k++) {
       const tt = t + k * sd / v;
-      if (!silent) playDrum(eng, snd, tt, out, k === 0 ? 1 : 0.75);
+      if (!silent) playDrum(eng, snd, tt, out, k === 0 ? 1 : 0.75, ch);
       if (roleOf(snd) === 'kick' && audible(ch, true)) duckAll(eng, tt);
     }
   }
@@ -1960,7 +2154,7 @@ function preview(ch, n) {
   if (isAudio(ch)) return previewAudio(ch);
   const t = ctx.currentTime + 0.01, vel = Math.max(ch.vol, 0.3);
   if (isMel(ch.sound)) playMelodic(E, ch, t, E.bus, 0.9 * vel, n ?? brushNote, stepDur() * 2);
-  else playDrum(E, SOUNDS[ch.sound], t, E.bus, vel);
+  else playDrum(E, SOUNDS[ch.sound], t, E.bus, vel, ch);
   const pad = padEls[ch.id];
   if (pad) { pad.classList.add('hit'); clearTimeout(pad._t); pad._t = setTimeout(() => pad.classList.remove('hit'), 120); }
 }
@@ -2259,10 +2453,15 @@ function buildGrid() {
       sel.addEventListener('change', () => { pushUndo(); changeSound(ch, sel.value); });
     }
 
+    const own = !!snd.user;
     const prb = el('button', 'ms prb', '🎹');
-    prb.title = mel ? 'Пианоролл' : 'Пианоролл — для баса и мелодий';
-    prb.disabled = !mel;
-    prb.addEventListener('click', () => openPianoRoll(ch));
+    prb.title = mel ? 'Пианоролл' : own ? 'Пианоролл — звук перейдёт в «Ноты», его можно играть на любой высоте' : 'Пианоролл — для баса и мелодий';
+    prb.disabled = !mel && !own;
+    prb.addEventListener('click', () => { if (!isMel(ch.sound) && SOUNDS[ch.sound].user) setSampleMel(SOUNDS[ch.sound], true); openPianoRoll(ch); });
+    const mlb = el('button', 'ms prb', '✨');
+    mlb.title = 'Написать мелодию — по теории музыки, звуку канала и его эффектам. Нажми ещё раз — будет другая';
+    if (!(mel || own) || isAudio(ch)) mlb.style.visibility = 'hidden';
+    mlb.addEventListener('click', () => melodyButton(ch));
 
     const fxb = el('button', 'ms fxb' + (ch.fx.length ? ' on' : ''), ch.fx.length ? 'FX ' + ch.fx.length : 'FX');
     fxb.title = 'Эффекты канала';
@@ -2294,8 +2493,10 @@ function buildGrid() {
     if (isAudio(ch)) prb.style.visibility = 'hidden';
     const synb = el('button', 'ms prb', '〰');
     synb.title = 'Синт BEATLAB Wave — волновые таблицы, фильтр, LFO';
-    if (ch.synth) synb.addEventListener('click', () => openSynth(ch)); else synb.style.visibility = 'hidden';
-    head.append(pad, sel, synb, prb, fxb, m, s, vol, pan, del);
+    if (ch.synth) synb.addEventListener('click', () => openSynth(ch));
+    else if (own) { synb.textContent = '⚙'; synb.title = 'Настройки звука — как Channel settings во FL (cut itself, лупы, обрезка, реверс…)'; synb.addEventListener('click', () => openChSet(ch)); }
+    else synb.style.visibility = 'hidden';
+    head.append(pad, sel, synb, prb, mlb, fxb, m, s, vol, pan, del);
     g.append(head);
 
     if (isAudio(ch)) { g.append(audioRow(ch, color)); return; }
@@ -2380,7 +2581,9 @@ function changeSound(ch, sound) {
   if (wasMel !== nowMel) convertChannel(ch, nowMel, SOUNDS[sound].user ? SOUNDS[sound].root - state.key : 0);
   if (CATS[SOUNDS[ch.sound].cat] !== CATS[SOUNDS[sound].cat]) ch.vol = CATS[SOUNDS[sound].cat].vol;
   ch.sound = sound;
-  if (SOUNDS[sound].user) { ch.sname = SOUNDS[sound].name; ch.smel = SOUNDS[sound].mel; ch.sroot = SOUNDS[sound].root; } else { delete ch.sname; delete ch.smel; delete ch.sroot; }
+  procCache.delete(ch.id);
+  if (SOUNDS[sound].user) { const u = SOUNDS[sound]; Object.assign(ch, { sname: u.name, smel: u.mel, sroot: u.root, sloop: u.loop, sbeats: u.beats, smp: smpDefaults(u) }); }
+  else for (const k of ['sname', 'smel', 'sroot', 'sloop', 'sbeats', 'smp']) delete ch[k];
   if (SOUNDS[sound].wave && !ch.synth) ch.synth = synthFor(sound);
   if (syn && syn.ch === ch && !SOUNDS[sound].wave) closeSynth();
   buildGrid(); save();
@@ -2402,12 +2605,14 @@ function setNow(s) {
     if (ph) { ph.style.display = s >= 0 ? 'block' : 'none'; ph.style.left = s * prColW + 'px'; }
   }
 }
+let lastQ = null;
 function draw() {
   if (playing && ctx) {
     let q = null;
     while (queue.length && queue[0].t <= ctx.currentTime) q = queue.shift();
-    if (q) { setNow(q.s); setSongNow(q.g); }
-  } else setSongNow(-1);
+    if (q) { setNow(q.s); setSongNow(q.g); lastQ = q; }
+  } else { setSongNow(-1); lastQ = null; }
+  drawTransport(lastQ ? lastQ.g : -1, lastQ && ctx ? clamp((ctx.currentTime - lastQ.t) / stepDur(), 0, 1) : 0);
   requestAnimationFrame(draw);
 }
 
@@ -2631,6 +2836,7 @@ function generateBeat(gKey) {
   const L = state.len, bars = L / 16;
   const prog = pick(G.progs).slice(0, L / 8);
   const chordAt = s => prog[Math.floor(s / 8) % prog.length];
+  lastProg = { key: state.key, p: prog.slice() };
 
   const snareBar = pick(G.snares).split('').map(x => x === 'x');
   const kickBar = pick(G.kicks).split('').map((x, i) => x === 'x' && (i === 0 || !snareBar[i]));
@@ -2672,7 +2878,7 @@ function generateBeat(gKey) {
       if (snd.user) { const sh = -12 * Math.round((state.key - snd.root) / 12); if (sh) for (const nt of ch.notes) nt.n += sh; }
       continue;
     }
-    if (isMel(ch.sound)) {
+    if (isMel(ch.sound) && !DRUM_CATS.includes(cat)) {
       if ((snd.user ? snd.lead : !snd.gate) && !leadDone) { ch.notes = leadNotes(G, chordAt, L, (snd.oct || 0) >= 4); leadDone = true; }
       else ch.notes = chordNotes(G, prog, L);
       if (snd.user) {
@@ -2684,7 +2890,9 @@ function generateBeat(gKey) {
       continue;
     }
     const a = Array(MAX).fill(0);
-    for (let i = 0; i < L; i++) {
+    // луп ставится один раз на свою длину (Cut itself перезапускает его ровно), а не на каждый шаг
+    if (snd.loop) for (let i = 0; i < L; i += clamp(Math.round(snd.beats * 4), 1, 64)) a[i] = 1;
+    else for (let i = 0; i < L; i++) {
       const p = i % 16, lastBar = i >= L - 16;
       if (cat === 'kick') a[i] = kicks[i] ? 1 : 0;
       else if (cat === 'snare') a[i] = snares[i] ? 1 : 0;
@@ -2693,7 +2901,10 @@ function generateBeat(gKey) {
       else if (cat === 'open') a[i] = lastBar && G.open.includes(p) ? 1 : 0;
       else if (cat === 'perc') a[i] = [3, 6, 11, 14].includes(p) && !kicks[i] && !snares[i] && rnd() < 0.35 ? 1 : 0;
       else if (cat === 'fx') a[i] = i === 0 && rnd() < 0.5 ? 1 : 0;
+      else if (cat === 'bass') a[i] = kicks[i] ? 1 : 0;           // 808 «ударами» — вместе с бочкой
+      else if (cat === 'melody') a[i] = i % 8 === 0 ? 1 : 0;      // мелодический одиночный звук — на смену аккорда
     }
+    if (isMel(ch.sound)) { ch.notes = a.map((v, i) => (v ? { s: i, l: 1, n: snd.root - state.key, v: 0.9 } : null)).filter(Boolean); continue; }
     ch.steps = a;
   }
   const roman = d => (G.harmonic && d === 4 ? 'V' : ROMAN[d]);
@@ -2721,11 +2932,180 @@ function pickMySounds(mix) {
     if (snd.id !== ch.sound) {
       if (isMel(ch.sound) !== snd.mel) convertChannel(ch, snd.mel, snd.root - state.key);
       if (!SOUNDS[ch.sound].user) ch.vol = CATS.user.vol;
-      ch.sound = snd.id; ch.sname = snd.name; ch.smel = snd.mel; ch.sroot = snd.root;
+      ch.sound = snd.id; procCache.delete(ch.id);
+      Object.assign(ch, { sname: snd.name, smel: snd.mel, sroot: snd.root, sloop: snd.loop, sbeats: snd.beats, smp: smpDefaults(snd) });
     }
     used++;
   }
   return used;
+}
+// ================= «Написать мелодию»: по теории музыки, звуку канала и его эффектам =================
+let lastProg = null;   // аккорды последнего случайного бита — мелодия ложится на них
+const MEL_STYLES = { auto: 'Авто — по звуку', melody: 'Мелодия', arp: 'Арпеджио', chords: 'Аккорды', bass: 'Бас', counter: 'Подголосок (длинные ноты)' };
+function soundProfile(ch) {
+  const snd = SOUNDS[ch.sound], fx = ch.fx.filter(f => f.on).map(f => f.type);
+  let sustain, bright, low;
+  if (snd.user) {
+    const an = snd.an || {};
+    sustain = snd.loop || (an.dur || 0.5) > 1.1;
+    bright = (an.zcr || 1500) > 2500;
+    low = snd.role === 'bass' || (an.pitch && an.pitch < 120);
+  } else if (ch.synth) {
+    sustain = ch.synth.amp.s > 40 || ch.synth.amp.r > 600;
+    bright = !(ch.synth.filter && ch.synth.filter.on !== false && ch.synth.filter.cutoff < 1500);
+    low = snd.cat === 'bass';
+  } else {
+    sustain = !!snd.gate;
+    bright = (snd.oct || 3) >= 4;
+    low = snd.cat === 'bass';
+  }
+  // эхо и реверб — больше воздуха между нотами; сатурация/OTT — плотнее и короче
+  return { sustain, bright, low, space: fx.includes('delay') || fx.includes('reverb'), punch: fx.includes('sat') || fx.includes('ott'), snd };
+}
+function currentProg() {
+  const n = Math.max(1, state.len / 8);
+  if (lastProg && lastProg.key === state.key) return lastProg.p.slice(0, n);
+  // угадываем аккорды по самой низкой ноте других мелодических каналов (бас обычно играет корень)
+  const roots = [];
+  for (let k = 0; k < n; k++) {
+    let low = null;
+    for (const c of state.channels) {
+      if (isAudio(c) || !isMel(c.sound)) continue;
+      for (const nt of c.notes) if (nt.s >= k * 8 && nt.s < k * 8 + 8) { const m = nt.n + 12 * (SOUNDS[c.sound].oct || 0); if (low === null || m < low) low = m; }
+    }
+    const pc = low === null ? null : ((low % 12) + 12) % 12, deg = SCALE.indexOf(pc);
+    roots.push(deg >= 0 ? deg : null);
+  }
+  if (roots.every(r => r !== null)) return roots;
+  const g = state.bpm <= 88 ? 'lofi' : state.bpm <= 100 ? 'boombap' : state.bpm <= 136 ? 'phonk' : 'trap';
+  return pick(GENRES[g].progs).slice(0, n);
+}
+function writeMelody(ch, style = 'auto') {
+  const P = soundProfile(ch), snd = P.snd, L = state.len, prog = currentProg();
+  const chordAt = s => prog[Math.floor(s / 8) % prog.length];
+  const tones = (deg, k = [0, 2, 4]) => k.map(x => deg + x);
+  if (style === 'auto') {
+    if (P.low) style = 'bass';
+    else if (P.sustain) style = pick(['chords', 'chords', 'counter', 'melody']);
+    else style = pick(P.space ? ['melody', 'melody', 'chords', 'arp'] : ['melody', 'melody', 'arp', 'arp', 'chords']);
+  }
+  const notes = [];
+  const add = (s, l, deg, v = 0.85) => { if (s < L) notes.push({ s, l: Math.max(0.5, Math.min(l, L - s)), n: degSemi(deg), v }); };
+  // ритм такта: сильные доли весомее, 16-е — только у коротких звуков без эха
+  const motif = (min, max) => {
+    const want = min + Math.floor(rnd() * (max - min + 1)), w = [];
+    for (let i = 0; i < 16; i++) w.push(i % 4 === 0 ? 3 : i % 2 === 0 ? 2 : (P.sustain || P.space ? 0 : 1));
+    const on = new Set([rnd() < 0.75 ? 0 : pick([2, 3])]);
+    while (on.size < want) {
+      let r = rnd() * w.reduce((a, b) => a + b, 0), i = 0;
+      while ((r -= w[i]) > 0) i++;
+      on.add(i);
+    }
+    return [...on].sort((a, b) => a - b);
+  };
+  if (style === 'melody') {
+    const dens = P.sustain ? [2, 4] : P.space ? [3, 5] : P.punch ? [5, 8] : [4, 7];
+    const m1 = motif(dens[0], dens[1]);
+    const m2 = rnd() < 0.6 ? m1 : motif(dens[0], dens[1]);
+    const center = P.bright ? 3 : 7, span = pick([3, 4, 5]);
+    const shape = pick(['arch', 'down', 'up', 'wave']);
+    const target = x => center + span * (shape === 'arch' ? Math.sin(x * Math.PI) - 0.3 : shape === 'down' ? 0.6 - x : shape === 'up' ? x - 0.4 : Math.sin(x * Math.PI * 2) * 0.7);
+    const ons = [];
+    for (let b = 0; b * 16 < L; b++) for (const p of (b % 2 ? m2 : m1)) ons.push(b * 16 + p);
+    let prev = center;
+    ons.forEach((s, j) => {
+      const tg = target(j / Math.max(1, ons.length - 1)), deg = chordAt(s);
+      let d;
+      if (s % 4 === 0) {
+        // сильная доля — звук аккорда, ближайший к линии мелодии
+        const ct = [];
+        for (const o of [-7, 0, 7, 14]) for (const t of tones(deg)) ct.push(t + o);
+        d = nearest(ct, (tg + prev) / 2);
+      } else { const st = clamp(Math.round(tg - prev), -2, 2); d = prev + (st || pick([-1, 1])); }
+      if (j === ons.length - 1) d = nearest([-7, 0, 7, 14].map(o => deg + o), d);   // фраза закрывается на корне аккорда
+      prev = d;
+      const next = j + 1 < ons.length ? ons[j + 1] : L;
+      const l = P.sustain ? next - s : Math.min(next - s, pick(P.punch ? [1, 1, 2] : [1, 2, 2, 3]));
+      add(s, l, d, s % 4 === 0 ? 0.9 : 0.75);
+    });
+  } else if (style === 'arp') {
+    const rate = P.space || P.sustain ? 2 : pick([1, 2]), dir = pick(['up', 'down', 'updown', 'random']), oct = pick([1, 2]);
+    const base = P.bright ? 0 : 7;
+    for (let s = 0, k = 0; s < L; s += rate, k++) {
+      const seq = [];
+      for (let o = 0; o < oct; o++) for (const t of tones(chordAt(s))) seq.push(base + t + 7 * o);
+      if (dir === 'down') seq.reverse();
+      const cyc = dir === 'updown' ? seq.concat(seq.slice(1, -1).reverse()) : seq;
+      add(s, rate, dir === 'random' ? pick(seq) : cyc[k % cyc.length], k % 4 === 0 ? 0.9 : 0.7);
+    }
+  } else if (style === 'chords') {
+    const rh = P.sustain ? pick(['x.......', 'x...x...', 'x.....x.']) : pick(['x..x..x.', 'x.......', 'x...x...', 'x..x....', '..x...x.', 'x.x...x.']);
+    const sev = rnd() < (state.bpm < 100 ? 0.6 : 0.25);
+    let prevV = null;
+    for (let s0 = 0; s0 < L; s0 += 8) {
+      const deg = chordAt(s0), semis = (sev ? [0, 2, 4, 6] : [0, 2, 4]).map(x => degSemi(deg + x));
+      const cands = [];
+      for (let r = 0; r < semis.length; r++) {
+        const v = semis.map((n, i) => (i < r ? n + 12 : n)).sort((a, b) => a - b);
+        for (const sh of [-12, 0, 12]) { const w = v.map(n => n + sh); if (w[0] >= -2 && w[w.length - 1] <= 21) cands.push(w); }
+      }
+      const dist = (a, b) => a.reduce((t, x, i) => t + Math.abs(x - (b[i] ?? b[b.length - 1])), 0);
+      const v = prevV ? cands.reduce((a, b) => (dist(b, prevV) < dist(a, prevV) ? b : a)) : (cands.find(w => w[0] >= 0 && w[0] <= 7) || cands[0]);
+      prevV = v;
+      const hits = [...rh].map((x, i) => (x === 'x' ? i : -1)).filter(i => i >= 0);
+      hits.forEach((h, j) => {
+        const l = (j + 1 < hits.length ? hits[j + 1] : 8) - h;
+        for (const n of v) if (s0 + h < L) notes.push({ s: s0 + h, l: P.sustain ? l : Math.min(l, 2), n, v: 0.7 });
+      });
+    }
+  } else if (style === 'bass') {
+    // бас — по бочке, если она есть; иначе по ритму жанра; иногда октава вверх и проходящая нота
+    const kick = state.channels.find(c => !isAudio(c) && roleOf(SOUNDS[c.sound]) === 'kick' && !isMel(c.sound));
+    let ons = kick ? kick.steps.slice(0, L).map((v, i) => (v ? i : -1)).filter(i => i >= 0) : [];
+    if (ons.length < 2) ons = [...pick(['x.........x.....', 'x......x..x.....', 'x.....x...x..x..', 'x..x......x.....'])].map((x, i) => (x === 'x' ? i : -1)).filter(i => i >= 0).flatMap(i => (L > 16 ? [i, i + 16] : [i]));
+    for (let s = 8; s < L; s += 8) if (!ons.includes(s) && rnd() < 0.5) ons.push(s);
+    ons.sort((a, b) => a - b);
+    ons.forEach((s, j) => {
+      const deg = chordAt(s), next = j + 1 < ons.length ? ons[j + 1] : L;
+      let d = deg > 4 ? deg - 7 : deg;
+      if (j > 0 && rnd() < 0.18) d += 7;                                 // октава вверх
+      else if (j === ons.length - 1 && rnd() < 0.4) d += pick([4, 7]);   // в конце — квинта или октава (под слайд)
+      add(s, next - s, d, 0.9);
+    });
+  } else {
+    // подголосок: одна-две длинные ноты на аккорд — терция или квинта сверху
+    for (let s = 0; s < L; s += 8) {
+      const deg = chordAt(s), two = rnd() < 0.4;
+      add(s, two ? 4 : 8, 7 + deg + pick([2, 4]), 0.7);
+      if (two) add(s + 4, 4, 7 + deg + pick([0, 2, 4]), 0.65);
+    }
+  }
+  // свой сэмпл держим около его родной высоты (иначе «пищит» или «бубнит»)
+  if (snd.user && notes.length) {
+    const avg = notes.reduce((a, nt) => a + nt.n, 0) / notes.length + state.key - snd.root;
+    const sh = -12 * Math.round(avg / 12);
+    if (sh) for (const nt of notes) nt.n += sh;
+  }
+  const lo = nLo(ch), hi = nHi(ch);
+  ch.notes = notes.filter(nt => nt.n >= lo && nt.n <= hi);
+  return { style, prog };
+}
+function melodyButton(ch, style = 'auto') {
+  const snd = SOUNDS[ch.sound];
+  if (isAudio(ch)) return;
+  pushUndo();
+  if (!isMel(ch.sound)) {
+    if (!snd.user) { toast('Мелодию пишут бас и мелодические звуки — выбери их в канале'); return; }
+    setSampleMel(snd, true, false);   // свой звук переводим в «Ноты»
+    const meta = library.find(sm => sm.id === snd.id);
+    if (meta) { meta.mel = true; idb('readwrite', st => st.put(meta, meta.id), 'samples').catch(() => {}); }
+  }
+  const r = writeMelody(ch, style);
+  buildGrid(); save();
+  if (pr && pr.ch === ch) buildPianoRoll();
+  const roman = r.prog.map(d => ROMAN[d]).join('–');
+  toast(`${MEL_STYLES[r.style] || r.style} · ${NOTE[state.key]} минор · ${roman} — нажми ещё раз, будет другая`);
+  if (!playing) start();
 }
 function randomize() {
   pushUndo();
@@ -3102,7 +3482,7 @@ function renamePattern(k) {
 // варианты для переходов: убираем или меняем части паттерна
 const DRUM_CATS = ['kick', 'snare', 'clap', 'hat', 'open', 'perc'];
 const VARIANTS = {
-  intro:   { label: 'Интро — только мелодия', name: 'Интро' },
+  intro:   { label: 'Интро — только мелодия (а если её нет — хэты и перкуссия)', name: 'Интро' },
   nokick:  { label: 'Без бочки и баса — перед дропом', name: 'Без бочки' },
   nodrums: { label: 'Брейк — без ударных', name: 'Брейк' },
   fill:    { label: 'Фил — сбивка в конце (снейр-ролл)', name: 'Фил' },
@@ -3111,17 +3491,20 @@ const VARIANTS = {
 function makeVariant(kind, src) {
   const data = cloneData(src), len = src.len, b = len - 16;  // b — начало последнего такта
   let rollDone = false;
+  const filled = d => d && (d.s.some(v => v) || d.n.length);
+  const melodyIn = state.channels.some(c => !isAudio(c) && roleOf(SOUNDS[c.sound]) === 'melody' && filled(data[c.id]));
+  const INTRO = melodyIn ? ['melody'] : ['hat', 'open', 'perc'];
   for (const ch of state.channels) {
     if (isAudio(ch)) continue;
     const d = data[ch.id];
     if (!d) continue;
     const cat = roleOf(SOUNDS[ch.sound]);
     const clear = () => { d.s = Array(MAX).fill(0); d.n = []; };
-    if (kind === 'intro' && cat !== 'melody') clear();
+    if (kind === 'intro' && !INTRO.includes(cat)) clear();
     if (kind === 'nokick' && (cat === 'kick' || cat === 'bass')) clear();
     if (kind === 'nodrums' && DRUM_CATS.includes(cat)) clear();
     if (kind === 'half' && DRUM_CATS.includes(cat)) for (let i = len / 2; i < MAX; i++) d.s[i] = 0;
-    if (kind === 'fill') {
+    if (kind === 'fill' && !SOUNDS[ch.sound].loop) {   // луп в сбивке не трогаем — иначе он перезапускается кашей
       // последняя доля последнего такта: без бочки, снейр-ролл с ускорением, трель хэтов, бас обрываем
       const last = [b + 12, b + 13, b + 14, b + 15];
       if (cat === 'kick' || cat === 'open') for (const i of last) d.s[i] = 0;
@@ -5476,6 +5859,54 @@ window.addEventListener('beforeunload', e => {
 });
 
 // ================= свои звуки: загрузка и хранение =================
+// разбор звука при загрузке: длина, удары внутри (луп или одиночный), основной тон (для 808 без тональности в названии), яркость
+function analyzeSample(buf, name, folder) {
+  const d = buf.getChannelData(0), sr = buf.sampleRate, hop = Math.max(1, Math.round(sr * 0.01));
+  let peak = 0;
+  for (let i = 0; i < d.length; i++) peak = Math.max(peak, Math.abs(d[i]));
+  const env = [];
+  for (let i = 0; i + hop <= d.length; i += hop) { let e = 0; for (let j = i; j < i + hop; j++) e += d[j] * d[j]; env.push(Math.sqrt(e / hop)); }
+  let onsets = 0, lastOn = -99, avg = 0;
+  for (let k = 0; k < env.length; k++) {
+    if (env[k] > peak * 0.08 && env[k] > avg * 1.9 && k - lastOn > 6) { onsets++; lastOn = k; }
+    avg = avg * 0.8 + env[k] * 0.2;
+  }
+  let zc = 0;
+  for (let i = 1; i < d.length; i++) if ((d[i - 1] < 0) !== (d[i] < 0)) zc++;
+  const zcr = zc / Math.max(1, d.length) * sr;   // переходов через ноль в секунду — грубая «яркость»
+  // основной тон: автокорреляция окна после атаки
+  let pitch = null;
+  const st = Math.min(d.length - 1, Math.round(sr * 0.06)), W = Math.min(4096, d.length - st);
+  if (W > 1024) {
+    // первый пик корреляции, почти равный лучшему (иначе тон уходит на октавы вниз)
+    const L0 = Math.round(sr / 1000), L1 = Math.min(Math.round(sr / 28), Math.floor(W / 2)), cor = [];
+    for (let L = L0; L <= L1; L++) {
+      let r = 0, n1 = 0, n2 = 0;
+      for (let i = 0; i < W - L; i += 2) { const a = d[st + i], b = d[st + i + L]; r += a * b; n1 += a * a; n2 += b * b; }
+      cor.push(r / Math.sqrt(n1 * n2 + 1e-12));
+    }
+    const best = Math.max(0, ...cor);
+    if (best > 0.8) for (let k = 1; k < cor.length - 1; k++) if (cor[k] >= best * 0.92 && cor[k] >= cor[k - 1] && cor[k] >= cor[k + 1]) { pitch = sr / (L0 + k); break; }
+  }
+  const dur = buf.duration;
+  const loop = LOOPISH.test(name + ' ' + folder) || (dur >= 1.2 && onsets >= 4);
+  // длина лупа в долях: темп из названия («140bpm») или ближайшее «музыкальное» число долей
+  let beats = 4;
+  const bm = (name + ' ' + folder).match(/(\d{2,3})\s?bpm/i);
+  if (bm) beats = Math.max(1, Math.round(dur * +bm[1] / 60));
+  else {
+    const c = [1, 2, 4, 8, 16, 32].map(b => ({ b, bpm: b * 60 / dur })).filter(x => x.bpm >= 70 && x.bpm <= 180);
+    if (c.length) beats = c.reduce((a, x) => (Math.abs(x.bpm - 130) < Math.abs(a.bpm - 130) ? x : a)).b;
+  }
+  return { dur: Math.round(dur * 100) / 100, onsets, zcr: Math.round(zcr), pitch: pitch && Math.round(pitch * 10) / 10, loop, beats };
+}
+const pitchPc = hz => ((Math.round(12 * Math.log2(hz / 440) + 69) % 12) + 12) % 12;
+function sampleInfo(name, folder, an) {
+  const mel = guessMel(name, folder, an.loop);
+  let root = guessRoot(name);
+  if (root === null && mel && an.pitch) root = pitchPc(an.pitch);
+  return { name, folder, mel, root, loop: an.loop, beats: an.beats, an };
+}
 const AUDIO_EXT = /\.(wav|mp3|ogg|oga|flac|m4a|aac|opus|webm|aif|aiff)$/i;
 const sampleTry = new Map();      // id → загрузка (или время неудачи, чтобы не долбить сервер)
 let decodeOff = null;
@@ -5515,12 +5946,31 @@ async function hashId(bytes) {
 async function loadLibrary() {
   try { library = ((await idb('readonly', st => st.getAll(), 'samples')) || []).sort((a, b) => a.folder.localeCompare(b.folder) || a.name.localeCompare(b.name)); } catch (e) { library = []; }
   for (const sm of library) {
-    const snd = registerSample(sm.id, sm.name, sm.mel, sm.folder, sm.root);
+    const snd = registerSample(sm.id, sm);
     if (snd.mel !== !!sm.mel) setSampleMel(snd, !!sm.mel, false);
     if (Number.isInteger(sm.root)) snd.root = sm.root;
-    snd.folder = sm.folder;
+    snd.folder = sm.folder; snd.role = guessRole(snd.name, snd.folder); snd.lead = leadish(snd.name + ' ' + snd.folder);
+    if (sm.an) { snd.an = sm.an; snd.loop = !!sm.loop; snd.beats = sm.beats || 4; }
   }
   if (library.length) buildGrid();
+  reanalyze(library.filter(sm => !sm.an));
+}
+// звуки, загруженные до разбора на лупы: разбираем один раз в фоне
+async function reanalyze(list) {
+  for (const sm of list) {
+    if (!(await loadSample(sm.id))) continue;
+    const an = analyzeSample(sampleBufs.get(sm.id), sm.name, sm.folder), snd = SOUNDS[sm.id];
+    Object.assign(sm, { an, loop: an.loop, beats: an.beats });
+    Object.assign(snd, { an, loop: an.loop, beats: an.beats });
+    if (an.loop && snd.mel) { setSampleMel(snd, false, false); sm.mel = false; }
+    if (snd.mel && an.pitch && guessRoot(sm.name) === null) sm.root = snd.root = pitchPc(an.pitch);
+    for (const ch of state.channels) if (ch.sound === sm.id && an.loop) {
+      Object.assign(ch, { sloop: true, sbeats: an.beats });
+      if (!ch.smp.time) Object.assign(ch.smp, { time: an.beats, cut: true, noteCut: false });
+    }
+    await idb('readwrite', st => st.put(sm, sm.id), 'samples').catch(() => {});
+  }
+  if (list.length) { buildGrid(); renderSamples(); }
 }
 // files — [{ file, folder }]
 async function importSamples(files) {
@@ -5540,11 +5990,12 @@ async function importSamples(files) {
       if (library.some(sm => sm.id === id)) { had++; continue; }
       const name = file.name.replace(/\.[^.]+$/, '').trim().slice(0, 60) || 'Мой звук';
       const dir = String(folder || 'Без папки').trim().slice(0, 40) || 'Без папки';
-      const meta = { id, name, folder: dir, mel: guessMel(name, dir), root: guessRoot(name), size: bytes.byteLength, addedAt: Date.now() };
+      const an = analyzeSample(buf, name, dir), inf = sampleInfo(name, dir, an);
+      const meta = { id, name, folder: dir, mel: inf.mel, root: inf.root, loop: an.loop, beats: an.beats, an, size: bytes.byteLength, addedAt: Date.now() };
       await idb('readwrite', st => st.put({ id, bytes }, id), 'sampleData');
       await idb('readwrite', st => st.put(meta, id), 'samples');
       library.push(meta);
-      registerSample(id, name, meta.mel, dir, meta.root);
+      registerSample(id, meta);
       added++;
     } catch (e) { bad++; }
   }
@@ -5568,8 +6019,12 @@ function previewSample(id, tonic = false) {
 function setSampleMel(snd, mel, store = true) {
   const chans = state.channels.filter(c => c.sound === snd.id);
   if (store && chans.length) pushUndo();
-  snd.mel = mel; snd.gate = mel; snd.role = guessRole(snd.name, snd.folder || '', mel);
-  for (const ch of chans) { convertChannel(ch, mel, snd.root - state.key); ch.smel = mel; }
+  snd.mel = mel; snd.gate = mel;
+  for (const ch of chans) {
+    convertChannel(ch, mel, snd.root - state.key); ch.smel = mel;
+    ch.smp = ch.smp || smpDefaults(snd);
+    ch.smp.noteCut = mel && ['bass', 'melody'].includes(snd.role) && !snd.loop;
+  }
   if (!store) return;
   const meta = library.find(sm => sm.id === snd.id);
   if (meta) { meta.mel = mel; idb('readwrite', st => st.put(meta, meta.id), 'samples').catch(() => {}); }
@@ -5617,7 +6072,7 @@ function renderSamples() {
     const snd = SOUNDS[sm.id];
     const it = el('div', 'smpitem');
     const pn = el('div', 'pn'); pn.textContent = sm.name;
-    pn.append(el('small', '', (sm.size / 1048576).toFixed(1) + ' МБ'));
+    pn.append(el('small', '', (sm.size / 1048576).toFixed(1) + ' МБ' + (snd.loop ? ` · луп ${snd.beats} дол.` : '') + ` · ${({ kick: 'бочка', snare: 'снейр', clap: 'клэп', hat: 'хэт', open: 'открытый хэт', perc: 'перкуссия', bass: 'бас', melody: 'мелодия', fx: 'FX' })[snd.role] || ''}`));
     const play = el('button', 'btn', '▶'); play.title = 'Послушать';
     play.addEventListener('click', () => previewSample(sm.id));
     const hit = el('button', 'btn mode' + (snd.mel ? '' : ' on'), 'Удары');
@@ -5674,6 +6129,158 @@ window.addEventListener('drop', async e => {
     : [...e.dataTransfer.files].map(file => ({ file, folder: 'Загруженные' }));
   importSamples(files);
 });
+
+// ================= окно настроек канала со своим звуком (как Channel settings во FL) =================
+let chs = null;
+function openChSet(ch) {
+  if (!SOUNDS[ch.sound].user) return;
+  closeFx();
+  ch.smp = normSmp(ch.smp, SOUNDS[ch.sound]);
+  chs = { ch };
+  $('#chs').hidden = false;
+  loadSample(ch.sound).then(() => renderChSet());
+  renderChSet();
+}
+function closeChSet() { chs = null; $('#chs').hidden = true; }
+function chEdit(label, fn) {
+  const ch = chs.ch;
+  pushUndo(undefined, 'smp:' + ch.id + ':' + label);
+  fn();
+  save();
+  drawChWave();
+}
+function chKnob(label, key, o) {
+  const s = chs.ch.smp, row = el('div', 'fxparam'), r = el('input'), v = el('span', 'v');
+  r.type = 'range'; r.min = o.min; r.max = o.max; r.step = o.step || 1;
+  const fmt = o.fmt || (x => Math.round(x));
+  const show = () => { r.value = s[key]; v.textContent = fmt(s[key]); };
+  r.addEventListener('input', () => chEdit(key, () => { s[key] = +r.value; v.textContent = fmt(s[key]); }));
+  r.addEventListener('change', () => { if (o.preview !== false) previewCh(); });
+  r.addEventListener('dblclick', () => chEdit(key, () => { s[key] = SMP_DEF[key]; show(); }));
+  show();
+  row.title = o.title || '';
+  row.append(el('span', '', label), r, v);
+  return row;
+}
+function chCheck(label, key, title) {
+  const s = chs.ch.smp, l = el('label', 'chk'), i = el('input');
+  i.type = 'checkbox'; i.checked = !!s[key];
+  i.addEventListener('change', () => { chEdit(key, () => { s[key] = i.checked; }); previewCh(); renderChSet(); });
+  l.title = title || '';
+  l.append(i, el('span', '', label));
+  return l;
+}
+function previewCh() { if (chs && !playing) preview(chs.ch); }
+function renderChSet() {
+  if (!chs) return;
+  const ch = chs.ch, snd = SOUNDS[ch.sound], s = ch.smp, box = $('#chsBody');
+  $('#chsTitle').textContent = snd.name;
+  box.innerHTML = '';
+  // верх: ON, PAN, VOL, PITCH, RANGE, FX — как шапка канала во FL
+  const top = el('div', 'chsec chtop');
+  const on = el('button', 'btn' + (ch.mute ? '' : ' primary'), ch.mute ? 'Выкл' : 'Вкл');
+  on.title = 'ON — канал звучит';
+  on.addEventListener('click', () => { ch.mute = !ch.mute; refreshMix(); buildGrid(); renderChSet(); });
+  const vol = el('div', 'fxparam'), vr = el('input'), vv = el('span', 'v');
+  Object.assign(vr, { type: 'range', min: 0, max: 1.5, step: 0.01, value: ch.vol });
+  vv.textContent = Math.round(ch.vol * 100) + '%';
+  vr.addEventListener('input', () => { ch.vol = +vr.value; vv.textContent = Math.round(ch.vol * 100) + '%'; refreshMix(); });
+  vol.append(el('span', '', 'VOL'), vr, vv);
+  const pan = el('div', 'fxparam'), pr2 = el('input'), pv = el('span', 'v');
+  Object.assign(pr2, { type: 'range', min: -1, max: 1, step: 0.05, value: ch.pan });
+  const pfmt = x => (x === 0 ? 'центр' : x < 0 ? 'L ' + Math.round(-x * 100) : 'R ' + Math.round(x * 100));
+  pv.textContent = pfmt(ch.pan);
+  pr2.addEventListener('input', () => { ch.pan = +pr2.value; pv.textContent = pfmt(ch.pan); refreshMix(); });
+  pan.append(el('span', '', 'PAN'), pr2, pv);
+  const fxb = el('button', 'btn', ch.fx.length ? 'FX · ' + ch.fx.length : 'FX');
+  fxb.title = 'Эффекты канала (вместо вставки микшера во FL)';
+  fxb.addEventListener('click', () => { closeChSet(); openFx(ch); });
+  const btns = el('div', 'chbtns');
+  btns.append(on, fxb);
+  top.append(btns, vol, pan,
+    chKnob('PITCH', 'tune', { min: -s.range, max: s.range, step: 0.01, fmt: x => (x > 0 ? '+' : '') + x.toFixed(2) + ' пт', title: 'Подстройка тона в пределах RANGE' }),
+    chKnob('RANGE', 'range', { min: 1, max: 48, fmt: x => '±' + x + ' пт', preview: false, title: 'Пределы ручки PITCH, в полутонах' }));
+  // файл
+  const file = el('div', 'chsec');
+  file.append(el('h4', '', 'File'));
+  const fsel = el('select', 'snd', soundOptions());
+  fsel.value = ch.sound;
+  fsel.title = 'Заменить звук канала (ноты и шаги останутся)';
+  fsel.addEventListener('change', () => { pushUndo(); changeSound(ch, fsel.value); if (SOUNDS[ch.sound].user) { ch.smp = normSmp(ch.smp, SOUNDS[ch.sound]); renderChSet(); } else closeChSet(); });
+  const info = el('div', 'recnote');
+  const an = snd.an || {};
+  info.textContent = [snd.folder, an.dur ? an.dur + ' с' : '', snd.loop ? `луп на ${snd.beats} ${snd.beats === 1 ? 'долю' : snd.beats < 5 ? 'доли' : 'долей'}` : 'одиночный звук',
+    snd.mel ? 'тон ' + NOTE[snd.root] : '', an.pitch ? `основной тон ≈ ${Math.round(an.pitch)} Гц` : ''].filter(Boolean).join(' · ');
+  file.append(fsel, info);
+  // волна
+  const wave = el('div', 'chsec chwave');
+  const cv = el('canvas'); cv.id = 'chWave'; cv.width = 900; cv.height = 140;
+  wave.append(cv);
+  // Playback
+  const play = el('div', 'chsec');
+  play.append(el('h4', '', 'Playback'),
+    chKnob('START OFFSET', 'offset', { min: 0, max: 99, fmt: x => x + '%', title: 'С какого места звук начинает играть' }),
+    chCheck('Use loop points — зациклить, пока звучит нота', 'loop', 'Звук повторяется по кругу, пока длится нота (или шаг)'),
+    chCheck('Ping pong loop — туда и обратно', 'ping', 'Петля играет вперёд, потом назад'),
+    chCheck('Cut itself — новая нота глушит прошлую', 'cut', 'Как во FL: 808 не наслаивается сам на себя, луп не играет поверх себя'),
+    chCheck('Нота обрезает звук', 'noteCut', 'Звук звучит ровно столько, сколько длится нота. Выключено — доигрывает до конца, как барабан'));
+  const dc = el('div', 'fxparam');
+  const dsel = el('select', '', '<option value="none">Нет</option><option value="out">Out only (без щелчка в конце)</option><option value="tr">Transient (сохраняет атаку)</option><option value="generic">Generic</option><option value="smooth">Smooth (мягко)</option>');
+  dsel.value = s.declick;
+  dsel.addEventListener('change', () => { chEdit('declick', () => { s.declick = dsel.value; }); previewCh(); });
+  dc.append(el('span', '', 'Declicking'), dsel, el('span'));
+  play.append(dc);
+  // Time stretching
+  const ts = el('div', 'chsec');
+  ts.append(el('h4', '', 'Time stretching · Resample'),
+    chKnob('PITCH', 'pitch', { min: -24, max: 24, fmt: x => (x > 0 ? '+' : '') + x + ' пт', title: 'Сдвиг тона в полутонах' }),
+    chKnob('TIME', 'time', { min: 0, max: 32, step: 0.25, fmt: x => (x ? x + ' дол.' : 'выкл'), title: 'Уложить весь звук в N долей темпа бита (лупы так встают в бит). 0 — как есть' }),
+    chKnob('MUL', 'mul', { min: 25, max: 400, fmt: x => x + '%', title: 'Множитель для TIME' }));
+  if (snd.loop) {
+    const fit = el('button', 'btn', `Подогнать луп под темп (${snd.beats} дол.)`);
+    fit.addEventListener('click', () => { chEdit('time', () => { s.time = snd.beats; s.mul = 100; s.cut = true; }); renderChSet(); previewCh(); });
+    ts.append(fit);
+  }
+  // Precomputed effects
+  const pe = el('div', 'chsec');
+  const checks = el('div', 'chchecks');
+  checks.append(chCheck('Remove DC offset', 'dc', 'Убрать постоянное смещение'), chCheck('Reverse polarity', 'pol', 'Перевернуть фазу'),
+    chCheck('Normalize', 'norm', 'Поднять громкость до максимума без перегруза'), chCheck('Fade stereo', 'fstereo', 'Звук плавно переезжает из левого канала в правый'),
+    chCheck('Reverse', 'rev', 'Задом наперёд'), chCheck('Swap stereo', 'swap', 'Поменять левый и правый канал'));
+  pe.append(el('h4', '', 'Precomputed effects'), checks,
+    chKnob('SMP START', 'start', { min: 0, max: 99, fmt: x => x + '%', title: 'Отрезать начало файла' }),
+    chKnob('LENGTH', 'len', { min: 1, max: 100, fmt: x => x + '%', title: 'Сколько от файла оставить' }),
+    chKnob('IN', 'fin', { min: 0, max: 2000, step: 5, fmt: x => x + ' мс', title: 'Плавное появление' }),
+    chKnob('OUT', 'fout', { min: 0, max: 2000, step: 5, fmt: x => x + ' мс', title: 'Плавное затухание' }),
+    chKnob('CROSSFADE', 'xfade', { min: 0, max: 500, step: 5, fmt: x => x + ' мс', title: 'Сглаживание стыка петли (для Use loop points)' }),
+    chKnob('TRIM', 'trim', { min: 0, max: 100, fmt: x => (x ? Math.round(-80 + x * 0.6) + ' дБ' : 'выкл'), title: 'Срезать тишину в начале и в конце (порог)' }));
+  box.append(top, file, wave, play, ts, pe);
+  drawChWave();
+}
+function drawChWave() {
+  const cv = $('#chWave');
+  if (!cv || !chs) return;
+  const g = cv.getContext('2d'), W = cv.width, H = cv.height, buf = sampleFor(chs.ch);
+  g.clearRect(0, 0, W, H);
+  g.fillStyle = '#14141d'; g.fillRect(0, 0, W, H);
+  if (!buf) { g.fillStyle = '#888'; g.font = '16px sans-serif'; g.fillText('Звук загружается…', 20, H / 2); return; }
+  const d = buf.getChannelData(0), step = Math.max(1, Math.floor(d.length / W));
+  g.fillStyle = '#c6ff3d';
+  for (let x = 0; x < W; x++) {
+    let mn = 1, mx = -1;
+    for (let i = x * step; i < Math.min(d.length, (x + 1) * step); i++) { mn = Math.min(mn, d[i]); mx = Math.max(mx, d[i]); }
+    g.fillRect(x, H / 2 - mx * H / 2, 1, Math.max(1, (mx - mn) * H / 2));
+  }
+  const s = chs.ch.smp;
+  if (s.offset) { g.fillStyle = '#ff3d6e'; g.fillRect(W * s.offset / 100, 0, 2, H); }
+  g.fillStyle = '#ffffff55'; g.font = '13px sans-serif';
+  g.fillText(`${buf.duration.toFixed(2)} с${s.loop ? ' · петля' : ''}`, 8, 16);
+}
+$('#chsClose').addEventListener('click', closeChSet);
+$('#chsPlay').addEventListener('click', () => { if (chs) { ensureAudio(); loadSample(chs.ch.sound).then(() => preview(chs.ch)); } });
+$('#stopAll').addEventListener('click', stopAll);
+$('#prGen').innerHTML = Object.entries(MEL_STYLES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('');
+$('#prGenBtn').addEventListener('click', () => { if (pr) melodyButton(pr.ch, $('#prGen').value); });
 
 // ================= вокальные каналы =================
 // Голос хранится в IndexedDB браузера (в бите только ссылка на клип), поэтому переживает перезагрузку.
