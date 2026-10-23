@@ -974,21 +974,42 @@ const MELISH = /key|piano|pluck|lead|synth|melod|pad|bell|guitar|chord|string|fl
 const has = (t, k) => ROLE_RX[k].test(t) || (ROLE_RX[k + '2'] ? ROLE_RX[k + '2'].test(t) : false);
 const drumRole = t => ['kick', 'snare', 'clap', 'open', 'hat', 'perc'].find(k => has(t, k)) || null;
 const LOOPISH = /loop|лууп|луп/i;
+// название как его понимает человек: «B A S S [C]» → «BASS [C]», «F X sub drop» → «FX sub drop», «no_kick» — не бочка
+const normName = t => String(t || '')
+  .replace(/(?<![A-Za-z])(?:[A-Za-z] {1,3}){1,}[A-Za-z](?![A-Za-z])/g, m => m.replace(/ +/g, ''))
+  .replace(/(?:no|without|w\/o|non)[ _\-]?(kick|kik|bd|snare|hats?|808|bass|perc|clap)s?/ig, ' ')
+  .replace(/(kick|snare|hat|808|bass|clap)less/ig, ' ');
+const FXISH = /(?<![a-z])fx(?![a-z])|riser|rise[ _-]?up|sweep|impact|uplift|downlift|whoosh|transition|reverse|rev[ _-]?(?:cym|crash)|sub[ _-]?drop|drop[ _-]?(?:fx|boom)|noise|siren|scratch|tape[ _-]?stop|vinyl/i;
+const DRUMLOOPISH = /drum|break|groove|full|top[ _-]?loop|perc[ _-]?loop|kit/i;
 // роль — по названию файла, потом по папке; от режима «Удары/Ноты» не зависит (бочка в пианоролле — всё равно бочка)
-function guessRole(name, folder) {
+function guessRole(name, folder, loop = false) {
+  name = normName(name); folder = normName(folder);
+  if (FXISH.test(name)) return 'fx';
   const d = drumRole(name);
   if (d) return d;
   if (has(name, 'bass')) return 'bass';
   if (MELISH.test(name)) return 'melody';
-  return drumRole(folder) || (has(folder, 'bass') ? 'bass' : MELISH.test(folder) ? 'melody' : 'fx');
+  if (loop && DRUMLOOPISH.test(name)) return 'drums';   // целый драм-луп: не бочка и не хэт
+  if (FXISH.test(folder)) return 'fx';
+  return drumRole(folder) || (has(folder, 'bass') ? 'bass' : MELISH.test(folder) ? 'melody' : loop && DRUMLOOPISH.test(folder) ? 'drums' : 'fx');
 }
-// нотами играются 808, бас и мелодические звуки; лупы — всегда «удары» (ставятся в начало такта)
-const guessMel = (name, folder = '', loop = false) => !loop && ['bass', 'melody'].includes(guessRole(name, folder));
+// нотами играются 808, бас и мелодические звуки; лупы и FX — «ударами»
+const guessMel = (name, folder = '', loop = false) => !loop && ['bass', 'melody'].includes(guessRole(name, folder, loop));
+// темп лупа из названия: «140bpm», «_150_», «150 BPM»
+function nameBpm(t) {
+  t = String(t || '');
+  const m = t.match(/(\d{2,3})\s?bpm/i) || t.match(/(?:^|[\s_\-\(\[])(\d{2,3})(?=$|[\s_\-\)\]])/);
+  const v = m ? +m[1] : 0;
+  return v >= 60 && v <= 200 ? v : 0;
+}
+// мажор/минор в названии («Cmaj», «A minor») — для тональности бита по мелодическому лупу
+const nameMajor = t => /(?<![a-z])(?:[A-G][#b]?\s?(?:maj|major|dur)|major|maj(?![a-z]))/i.test(String(t || '')) && !/minor|min(?![a-z])|moll/i.test(String(t || ''));
 // тональность из названия: «808 Dark F#», «Bass_C#m», «Keys (Gb min)», «808 [C]» → 0–11 (до — 0)
 const NOTE_PC = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
 function guessRoot(name) {
   const rx = /(?:^|[\s_\-\(\[.,])([A-G])(#|♯|b|♭|sharp|flat)?\s?(?:m|min|minor|maj|major|dur|moll)?(?=$|[\s_\-\)\].,\d])/g;
   let m, pc = null;
+  name = normName(name);
   while ((m = rx.exec(name))) pc = (NOTE_PC[m[1]] + (m[2] && /#|♯|sharp/.test(m[2]) ? 1 : m[2] ? -1 : 0) + 12) % 12;
   return pc;
 }
@@ -999,7 +1020,8 @@ function registerSample(id, info = {}) {
   if (old) return old;
   const name = String(info.name || 'Мой звук').slice(0, 60), folder = String(info.folder || '');
   return (SOUNDS[id] = {
-    id, cat: 'user', name, folder, oct: 3, user: true, mel: !!info.mel, gate: !!info.mel, layers: [], role: guessRole(name, folder),
+    id, cat: 'user', name, folder, oct: 3, user: true, mel: !!info.mel, gate: !!info.mel, layers: [], role: guessRole(name, folder, !!info.loop),
+    keyKnown: guessRoot(name) !== null, major: nameMajor(name),
     root: Number.isInteger(info.root) ? clamp(info.root, 0, 11) : (guessRoot(name) ?? 0), lead: leadish(name + ' ' + folder),
     loop: !!info.loop, beats: info.beats || 4, an: info.an || null,
     play: (e, t, out, v, f, gf, gate, ch) => playSample(e, SOUNDS[id], t, out, v, f, gf, gate, ch),
@@ -1092,7 +1114,8 @@ function processSample(raw, s) {
   return out;
 }
 // сэмпл звучит как есть на своей ноте (как «root note» в сэмплере FL; по умолчанию C5), выше и ниже — быстрее и медленнее
-function playSample(eng, snd, t, out, vel, f, glideFrom, gate, ch) {
+// loopBase — номер шага (от начала трека), с которого начался этот круг паттерна
+function playSample(eng, snd, t, out, vel, f, glideFrom, gate, ch, loopBase = null) {
   const s = (ch && ch.smp) || SMP_DEF;
   const buf = ch ? sampleFor(ch) : sampleBufs.get(snd.id);
   if (!buf) { loadSample(snd.id); return { gs: [], end: t }; }
@@ -1105,7 +1128,11 @@ function playSample(eng, snd, t, out, vel, f, glideFrom, gate, ch) {
   const rate = clamp((f ? f / base : 1) * k, 1 / 64, 64);
   if (glideFrom) { src.playbackRate.setValueAtTime(clamp(glideFrom / base * k, 1 / 64, 64), t); src.playbackRate.exponentialRampToValueAtTime(rate, t + 0.09); }
   else src.playbackRate.value = rate;
-  const off = buf.duration * s.offset / 100;
+  let off = buf.duration * s.offset / 100;
+  if (loopBase !== null && snd.loop && s.time > 0 && !s.loop) {
+    const loopSteps = s.time * s.mul / 100 * 4;
+    if (loopSteps > state.len + 0.01) off = (off + (((loopBase % loopSteps) + loopSteps) % loopSteps) / loopSteps * buf.duration) % buf.duration;
+  }
   const [dIn, dOut] = DECLICK[s.declick] || DECLICK.out;
   if (s.loop) src.loop = true;
   let end = s.loop ? t + Math.max(gate || stepDur(), 0.02) : t + (buf.duration - off) / rate;
@@ -2088,8 +2115,8 @@ function choke(eng, key, t, tc = 0.01) {
   chokeVoice(v, t, tc);
 }
 
-function playDrum(eng, snd, t, out, vel, ch) {
-  if (snd.user) { playSample(eng, snd, t, out, vel, null, null, ch && ch.smp && ch.smp.loop ? stepDur() : null, ch); return; }
+function playDrum(eng, snd, t, out, vel, ch, base = null) {
+  if (snd.user) { playSample(eng, snd, t, out, vel, null, null, ch && ch.smp && ch.smp.loop ? stepDur() : null, ch, base); return; }
   if (snd.chokes || snd.group) choke(eng, 'open', t, 0.008);
   const gs = [];
   let end = t;
@@ -2123,6 +2150,7 @@ function swingOff(i, sd) { return i % 2 ? sd * (state.swing / 100) * 0.5 : 0; }
 
 // шаг i паттерна pat (данные берутся из паттерна, а не из каналов — так в песне звучат разные паттерны)
 // only — id канала, если в плейлисте стоит клип только этого канала
+let schedG = 0;   // какой шаг трека сейчас ставится в очередь (для длинных лупов)
 function scheduleStep(eng, i, t, pat, only = null) {
   const sd = stepDur();
   for (const ch of state.channels) {
@@ -2143,7 +2171,7 @@ function scheduleStep(eng, i, t, pat, only = null) {
     if (!v) continue;
     for (let k = 0; k < v; k++) {
       const tt = t + k * sd / v;
-      if (!silent) playDrum(eng, snd, tt, out, k === 0 ? 1 : 0.75, ch);
+      if (!silent) playDrum(eng, snd, tt, out, k === 0 ? 1 : 0.75, ch, k === 0 ? schedG - i : null);
       if (roleOf(snd) === 'kick' && audible(ch, true)) duckAll(eng, tt);
     }
   }
@@ -2234,6 +2262,7 @@ function scheduler() {
     }
     const t = nextT + swingOff(curG, sd);
     let local = -1;
+    schedG = curG;
     for (const [p, i, only] of playingAt(curG)) {
       scheduleStep(E, i, t, p, only);
       if (p === curPat()) local = i;   // для подсветки шага в стойке
@@ -2828,6 +2857,12 @@ function chordNotes(G, prog, L) {
 
 function generateBeat(gKey) {
   const G = GENRES[gKey];
+  for (const ch of state.channels) {
+    const u = SOUNDS[ch.sound];
+    if (u && u.user && !u.loop && !isMel(ch.sound) && ['bass', 'melody'].includes(u.role)) setSampleMel(u, true, false);   // бас и мелодия «ударами» играли бы одну ноту мимо аккордов
+  }
+  const keyLoop = state.channels.map(c => SOUNDS[c.sound]).find(u => u && u.user && u.loop && u.role === 'melody' && u.keyKnown);
+  if (keyLoop) state.key = keyLoop.major ? (keyLoop.root + 9) % 12 : keyLoop.root;   // мажорный луп → параллельный минор
   const rint = ([a, b]) => Math.round(a + rnd() * (b - a));
   state.bpm = rint(G.bpm);
   state.swing = rint(G.swing);
@@ -2902,7 +2937,7 @@ function generateBeat(gKey) {
       else if (cat === 'hat') a[i] = hats[i];
       else if (cat === 'open') a[i] = lastBar && G.open.includes(p) ? 1 : 0;
       else if (cat === 'perc') a[i] = [3, 6, 11, 14].includes(p) && !kicks[i] && !snares[i] && rnd() < 0.35 ? 1 : 0;
-      else if (cat === 'fx') a[i] = i === 0 && rnd() < 0.5 ? 1 : 0;
+      else if (cat === 'fx') a[i] = i === 0 && rnd() < 0.35 ? 1 : 0;
       else if (cat === 'bass') a[i] = kicks[i] ? 1 : 0;           // 808 «ударами» — вместе с бочкой
       else if (cat === 'melody') a[i] = i % 8 === 0 ? 1 : 0;      // мелодический одиночный звук — на смену аккорда
     }
@@ -3818,7 +3853,7 @@ function renamePattern(k) {
 }
 
 // варианты для переходов: убираем или меняем части паттерна
-const DRUM_CATS = ['kick', 'snare', 'clap', 'hat', 'open', 'perc'];
+const DRUM_CATS = ['kick', 'snare', 'clap', 'hat', 'open', 'perc', 'drums'];
 const VARIANTS = {
   intro:   { label: 'Интро — только мелодия (а если её нет — хэты и перкуссия)', name: 'Интро' },
   nokick:  { label: 'Без бочки и баса — перед дропом', name: 'Без бочки' },
@@ -5603,6 +5638,7 @@ async function renderOffline(reps, extra, only = null) {
     applyMix(X, true);
     for (let g = 0; g < total; g++) {
       const t = g * sd + swingOff(g, sd);
+      schedG = g;
       for (const [p, i, onlyCh] of playingAt(g)) scheduleStep(X, i, t, p, onlyCh);
       if (isSong()) for (const c of audioClipsAt(g)) playAudioClip(X, c, g * sd);
     }
@@ -6230,8 +6266,8 @@ function analyzeSample(buf, name, folder) {
   const loop = LOOPISH.test(name + ' ' + folder) || (dur >= 1.2 && onsets >= 4);
   // длина лупа в долях: темп из названия («140bpm») или ближайшее «музыкальное» число долей
   let beats = 4;
-  const bm = (name + ' ' + folder).match(/(\d{2,3})\s?bpm/i);
-  if (bm) beats = Math.max(1, Math.round(dur * +bm[1] / 60));
+  const bpm = nameBpm(name) || nameBpm(folder);
+  if (bpm) beats = Math.max(1, Math.round(dur * bpm / 60));
   else {
     const c = [1, 2, 4, 8, 16, 32].map(b => ({ b, bpm: b * 60 / dur })).filter(x => x.bpm >= 70 && x.bpm <= 180);
     if (c.length) beats = c.reduce((a, x) => (Math.abs(x.bpm - 130) < Math.abs(a.bpm - 130) ? x : a)).b;
@@ -6287,8 +6323,22 @@ async function loadLibrary() {
     const snd = registerSample(sm.id, sm);
     if (snd.mel !== !!sm.mel) setSampleMel(snd, !!sm.mel, false);
     if (Number.isInteger(sm.root)) snd.root = sm.root;
-    snd.folder = sm.folder; snd.role = guessRole(snd.name, snd.folder); snd.lead = leadish(snd.name + ' ' + snd.folder);
+    if (sm.an && sm.rv !== 2) {
+      // распознавание стало точнее (разрядка в названиях, FX, «no kick», темп из названия) — пересчитываем один раз
+      const an = sm.an, bpm = nameBpm(sm.name) || nameBpm(sm.folder);
+      if (an.loop && bpm) an.beats = sm.beats = Math.max(1, Math.round(an.dur * bpm / 60));
+      const inf = sampleInfo(sm.name, sm.folder, an);
+      sm.mel = inf.mel; if (inf.root !== null) sm.root = inf.root;
+      sm.rv = 2;
+      idb('readwrite', st => st.put(sm, sm.id), 'samples').catch(() => {});
+      if (snd.mel !== sm.mel) setSampleMel(snd, sm.mel, false);
+      if (Number.isInteger(sm.root)) snd.root = sm.root;
+    }
+    snd.folder = sm.folder;
     if (sm.an) { snd.an = sm.an; snd.loop = !!sm.loop; snd.beats = sm.beats || 4; }
+    snd.role = guessRole(snd.name, snd.folder, snd.loop); snd.lead = leadish(snd.name + ' ' + snd.folder);
+    snd.keyKnown = guessRoot(snd.name) !== null; snd.major = nameMajor(snd.name);
+    for (const ch of state.channels) if (ch.sound === sm.id && ch.smp && snd.loop) { ch.sbeats = snd.beats; if (ch.smp.time) ch.smp.time = snd.beats; }
   }
   if (library.length) buildGrid();
   reanalyze(library.filter(sm => !sm.an));
@@ -6299,7 +6349,8 @@ async function reanalyze(list) {
     if (!(await loadSample(sm.id))) continue;
     const an = analyzeSample(sampleBufs.get(sm.id), sm.name, sm.folder), snd = SOUNDS[sm.id];
     Object.assign(sm, { an, loop: an.loop, beats: an.beats });
-    Object.assign(snd, { an, loop: an.loop, beats: an.beats });
+    Object.assign(snd, { an, loop: an.loop, beats: an.beats, role: guessRole(snd.name, snd.folder, an.loop) });
+    sm.rv = 2;
     if (an.loop && snd.mel) { setSampleMel(snd, false, false); sm.mel = false; }
     if (snd.mel && an.pitch && guessRoot(sm.name) === null) sm.root = snd.root = pitchPc(an.pitch);
     for (const ch of state.channels) if (ch.sound === sm.id && an.loop) {
@@ -6329,7 +6380,7 @@ async function importSamples(files) {
       const name = file.name.replace(/\.[^.]+$/, '').trim().slice(0, 60) || 'Мой звук';
       const dir = String(folder || 'Без папки').trim().slice(0, 40) || 'Без папки';
       const an = analyzeSample(buf, name, dir), inf = sampleInfo(name, dir, an);
-      const meta = { id, name, folder: dir, mel: inf.mel, root: inf.root, loop: an.loop, beats: an.beats, an, size: bytes.byteLength, addedAt: Date.now() };
+      const meta = { id, name, folder: dir, mel: inf.mel, root: inf.root, loop: an.loop, beats: an.beats, an, rv: 2, size: bytes.byteLength, addedAt: Date.now() };
       await idb('readwrite', st => st.put({ id, bytes }, id), 'sampleData');
       await idb('readwrite', st => st.put(meta, id), 'samples');
       library.push(meta);
