@@ -2459,8 +2459,8 @@ function buildGrid() {
     prb.disabled = !mel && !own;
     prb.addEventListener('click', () => { if (!isMel(ch.sound) && SOUNDS[ch.sound].user) setSampleMel(SOUNDS[ch.sound], true); openPianoRoll(ch); });
     const mlb = el('button', 'ms prb', '✨');
-    mlb.title = 'Написать мелодию — по теории музыки, звуку канала и его эффектам. Нажми ещё раз — будет другая';
-    if (!(mel || own) || isAudio(ch)) mlb.style.visibility = 'hidden';
+    mlb.title = mel || own ? 'Написать мелодию — слушает весь бит, перебирает сотни вариантов по теории музыки и оставляет лучший. Нажми ещё раз — будет другая' : 'Написать партию — не ляжет на соседей (клэп не на снейр, перкуссия не на бочку)';
+    if (isAudio(ch)) mlb.style.visibility = 'hidden';
     mlb.addEventListener('click', () => melodyButton(ch));
 
     const fxb = el('button', 'ms fxb' + (ch.fx.length ? ' on' : ''), ch.fx.length ? 'FX ' + ch.fx.length : 'FX');
@@ -2871,6 +2871,8 @@ function generateBeat(gKey) {
   };
 
   let leadDone = false;
+  // клэп при живом снейре не дублирует его, а отвечает в паузах
+  const hasSnare = state.channels.some(c => !isAudio(c) && roleOf(SOUNDS[c.sound]) === 'snare' && !SOUNDS[c.sound].loop);
   for (const ch of state.channels) {
     const snd = SOUNDS[ch.sound], cat = roleOf(snd);
     if (isMel(ch.sound) && cat === 'bass') {
@@ -2896,7 +2898,7 @@ function generateBeat(gKey) {
       const p = i % 16, lastBar = i >= L - 16;
       if (cat === 'kick') a[i] = kicks[i] ? 1 : 0;
       else if (cat === 'snare') a[i] = snares[i] ? 1 : 0;
-      else if (cat === 'clap') a[i] = snares[i] && (p === 4 || p === 8 || p === 12) ? 1 : 0;
+      else if (cat === 'clap') a[i] = hasSnare ? (!snares[i] && !kicks[i] && (p === 7 || p === 15) && rnd() < 0.45 ? 1 : 0) : (snares[i] ? 1 : 0);
       else if (cat === 'hat') a[i] = hats[i];
       else if (cat === 'open') a[i] = lastBar && G.open.includes(p) ? 1 : 0;
       else if (cat === 'perc') a[i] = [3, 6, 11, 14].includes(p) && !kicks[i] && !snares[i] && rnd() < 0.35 ? 1 : 0;
@@ -2980,132 +2982,468 @@ function currentProg() {
   const g = state.bpm <= 88 ? 'lofi' : state.bpm <= 100 ? 'boombap' : state.bpm <= 136 ? 'phonk' : 'trap';
   return pick(GENRES[g].progs).slice(0, n);
 }
-function writeMelody(ch, style = 'auto') {
-  const P = soundProfile(ch), snd = P.snd, L = state.len, prog = currentProg();
-  const chordAt = s => prog[Math.floor(s / 8) % prog.length];
-  const tones = (deg, k = [0, 2, 4]) => k.map(x => deg + x);
-  if (style === 'auto') {
-    if (P.low) style = 'bass';
-    else if (P.sustain) style = pick(['chords', 'chords', 'counter', 'melody']);
-    else style = pick(P.space ? ['melody', 'melody', 'chords', 'arp'] : ['melody', 'melody', 'arp', 'arp', 'chords']);
+// ---------- что уже звучит в бите: ноты по полушагам, ударные по шагам, аккорды, занятые регистры ----------
+const absM = (c, n) => 24 + state.key + n + 12 * ((SOUNDS[c.sound] || {}).oct || 0);
+const ROLES_ALL = ['kick', 'snare', 'clap', 'hat', 'open', 'perc', 'fx', 'bass', 'melody'];
+function beatContext(ch) {
+  const L = state.len, H = L * 2;
+  const cx = { L, H, prog: currentProg(), sound: Array.from({ length: H }, () => []), mOn: new Float32Array(H), drums: {}, lowTop: -1, regs: [], melLines: [] };
+  for (const r of ROLES_ALL) cx.drums[r] = new Uint8Array(L);
+  for (const c of state.channels) {
+    if (c === ch || isAudio(c) || c.mute) continue;
+    const snd = SOUNDS[c.sound], role = roleOf(snd);
+    if (isMel(c.sound)) {
+      const drum = DRUM_CATS.includes(role), line = [];
+      for (const nt of c.notes) {
+        if (nt.s >= L) continue;
+        if (drum) { cx.drums[role][Math.floor(nt.s)] = 1; continue; }
+        const m = absM(c, nt.n);
+        for (let k = Math.round(nt.s * 2); k < Math.min(H, Math.round((nt.s + nt.l) * 2)); k++) cx.sound[k].push(m);
+        cx.mOn[Math.round(nt.s * 2)] += 1;
+        cx.drums[role === 'bass' ? 'bass' : 'melody'][Math.floor(nt.s)] = 1;
+        if (role === 'bass') cx.lowTop = Math.max(cx.lowTop, m); else { cx.regs.push(m); line.push({ s: nt.s, m }); }
+      }
+      if (line.length) cx.melLines.push(line.sort((a, b) => a.s - b.s));
+    } else {
+      for (let i = 0; i < L; i++) if (c.steps[i]) { cx.drums[role][i] = 1; if (role === 'bass' || role === 'melody') cx.mOn[i * 2] += 1; }
+    }
+  }
+  cx.chordAt = s => cx.prog[Math.floor(s / 8) % cx.prog.length];
+  // тяжёлый жанр (трэп, дрилл) — снейр на 3-й доле такта, иначе на 2-й и 4-й
+  cx.half = state.bpm >= 120;
+  return cx;
+}
+const mod7 = d => ((d % 7) + 7) % 7;
+const isChordTone = (d, deg, sev) => [0, 2, 4].concat(sev ? [6] : []).includes(mod7(d - deg));
+const pickW = (items, w) => { let r = rnd() * w.reduce((a, b) => a + b, 0), i = 0; while ((r -= w[i]) > 0 && i < items.length - 1) i++; return items[i]; };
+// регистр: свободная полоса над басом и в стороне от других мелодий; свой звук — около его родной высоты
+function pickCenter(ch, cx, P, style) {
+  const snd = SOUNDS[ch.sound], tonicM = absM(ch, 0);
+  let sweet = style === 'bass' ? 40 : style === 'counter' ? 74 : P.bright ? 66 : 71;
+  if (snd.user) sweet = 60 + snd.root + (style === 'bass' ? 0 : 2);
+  const med = cx.regs.length ? cx.regs.slice().sort((a, b) => a - b)[cx.regs.length >> 1] : null;
+  let best = sweet, bs = Infinity;
+  for (let c = sweet - 9; c <= sweet + 9; c++) {
+    let sc = Math.abs(c - sweet);
+    if (style !== 'bass' && med !== null && Math.abs(c - med) < 6) sc += (6 - Math.abs(c - med)) * 2.5;
+    if (style !== 'bass' && cx.lowTop > 0 && c - 5 < cx.lowTop + 7) sc += 8;
+    if (sc < bs) { bs = sc; best = c; }
+  }
+  return Math.round((best - tonicM) * 7 / 12);   // центр в ступенях лада от тоники
+}
+const toSemi = nt => degSemi(nt.d) + (nt.alt || 0);
+
+// ---------- ритм: ячейки на одну долю (4 шага); плотность — по звуку ----------
+const CELLS = [
+  { on: [0], w: [3, 2, 1] }, { on: [0, 2], w: [3, 3, 2] }, { on: [0, 1, 2, 3], w: [0, 1, 3] }, { on: [0, 3], w: [2, 3, 2] },
+  { on: [1, 2], w: [0, 2, 2] }, { on: [0, 1, 2], w: [0, 2, 3] }, { on: [2], w: [3, 2, 1] }, { on: [0, 2, 3], w: [1, 3, 3] },
+  { on: [], w: [3, 1, 0] }, { on: [0, 1.5, 3], w: [0, 1, 2] }, { on: [2, 3], w: [1, 2, 2] }, { on: [0, 0.5, 2], w: [0, 1, 2] },
+];
+function rhythmSeg(level) {   // 8 шагов = 2 доли
+  const out = [];
+  for (const b of [0, 4]) { const c = pickW(CELLS, CELLS.map(x => x.w[level])); for (const o of c.on) out.push(b + o); }
+  return out;
+}
+// ---------- мелодия: мотив → развитие → контраст → каденция ----------
+function genMelodyCand(ch, cx, P) {
+  const L = cx.L, segs = L / 8, level = P.sustain ? 0 : P.punch ? 2 : P.space ? 1 : pick([1, 1, 2]);
+  const center = pickCenter(ch, cx, P, 'melody');
+  const form = segs >= 4 ? pick(['AA1BC', 'ABA1C', 'AA1A2C', 'ABA1B1']) : pick(['AC', 'A1C', 'AB']);
+  const parts = form.match(/[A-C]\d?/g).slice(0, segs);
+  const motifR = rhythmSeg(level);
+  if (!motifR.length) motifR.push(0, 3);
+  // контур мотива: ходы по ступеням (шаги чаще, скачок — с возвратом)
+  const motifI = [];
+  for (let k = 1; k < motifR.length; k++) {
+    const prev = motifI[k - 2] || 0;
+    let iv = Math.abs(prev) >= 3 ? -Math.sign(prev) * pick([1, 1, 2]) : pickW([1, -1, 2, -2, 0, 3, -3, 4, -4], [5, 5, 2.5, 2.5, 1, 1, 1, 0.5, 0.5]);
+    motifI.push(iv);
   }
   const notes = [];
-  const add = (s, l, deg, v = 0.85) => { if (s < L) notes.push({ s, l: Math.max(0.5, Math.min(l, L - s)), n: degSemi(deg), v }); };
-  // ритм такта: сильные доли весомее, 16-е — только у коротких звуков без эха
-  const motif = (min, max) => {
-    const want = min + Math.floor(rnd() * (max - min + 1)), w = [];
-    for (let i = 0; i < 16; i++) w.push(i % 4 === 0 ? 3 : i % 2 === 0 ? 2 : (P.sustain || P.space ? 0 : 1));
-    const on = new Set([rnd() < 0.75 ? 0 : pick([2, 3])]);
-    while (on.size < want) {
-      let r = rnd() * w.reduce((a, b) => a + b, 0), i = 0;
-      while ((r -= w[i]) > 0) i++;
-      on.add(i);
-    }
-    return [...on].sort((a, b) => a - b);
-  };
-  if (style === 'melody') {
-    const dens = P.sustain ? [2, 4] : P.space ? [3, 5] : P.punch ? [5, 8] : [4, 7];
-    const m1 = motif(dens[0], dens[1]);
-    const m2 = rnd() < 0.6 ? m1 : motif(dens[0], dens[1]);
-    const center = P.bright ? 3 : 7, span = pick([3, 4, 5]);
-    const shape = pick(['arch', 'down', 'up', 'wave']);
-    const target = x => center + span * (shape === 'arch' ? Math.sin(x * Math.PI) - 0.3 : shape === 'down' ? 0.6 - x : shape === 'up' ? x - 0.4 : Math.sin(x * Math.PI * 2) * 0.7);
-    const ons = [];
-    for (let b = 0; b * 16 < L; b++) for (const p of (b % 2 ? m2 : m1)) ons.push(b * 16 + p);
-    let prev = center;
-    ons.forEach((s, j) => {
-      const tg = target(j / Math.max(1, ons.length - 1)), deg = chordAt(s);
-      let d;
-      if (s % 4 === 0) {
-        // сильная доля — звук аккорда, ближайший к линии мелодии
-        const ct = [];
-        for (const o of [-7, 0, 7, 14]) for (const t of tones(deg)) ct.push(t + o);
-        d = nearest(ct, (tg + prev) / 2);
-      } else { const st = clamp(Math.round(tg - prev), -2, 2); d = prev + (st || pick([-1, 1])); }
-      if (j === ons.length - 1) d = nearest([-7, 0, 7, 14].map(o => deg + o), d);   // фраза закрывается на корне аккорда
-      prev = d;
-      const next = j + 1 < ons.length ? ons[j + 1] : L;
-      const l = P.sustain ? next - s : Math.min(next - s, pick(P.punch ? [1, 1, 2] : [1, 2, 2, 3]));
-      add(s, l, d, s % 4 === 0 ? 0.9 : 0.75);
-    });
-  } else if (style === 'arp') {
-    const rate = P.space || P.sustain ? 2 : pick([1, 2]), dir = pick(['up', 'down', 'updown', 'random']), oct = pick([1, 2]);
-    const base = P.bright ? 0 : 7;
-    for (let s = 0, k = 0; s < L; s += rate, k++) {
-      const seq = [];
-      for (let o = 0; o < oct; o++) for (const t of tones(chordAt(s))) seq.push(base + t + 7 * o);
-      if (dir === 'down') seq.reverse();
-      const cyc = dir === 'updown' ? seq.concat(seq.slice(1, -1).reverse()) : seq;
-      add(s, rate, dir === 'random' ? pick(seq) : cyc[k % cyc.length], k % 4 === 0 ? 0.9 : 0.7);
-    }
-  } else if (style === 'chords') {
-    const rh = P.sustain ? pick(['x.......', 'x...x...', 'x.....x.']) : pick(['x..x..x.', 'x.......', 'x...x...', 'x..x....', '..x...x.', 'x.x...x.']);
-    const sev = rnd() < (state.bpm < 100 ? 0.6 : 0.25);
-    let prevV = null;
-    for (let s0 = 0; s0 < L; s0 += 8) {
-      const deg = chordAt(s0), semis = (sev ? [0, 2, 4, 6] : [0, 2, 4]).map(x => degSemi(deg + x));
-      const cands = [];
-      for (let r = 0; r < semis.length; r++) {
-        const v = semis.map((n, i) => (i < r ? n + 12 : n)).sort((a, b) => a - b);
-        for (const sh of [-12, 0, 12]) { const w = v.map(n => n + sh); if (w[0] >= -2 && w[w.length - 1] <= 21) cands.push(w); }
+  let last = center;
+  parts.forEach((pt, si) => {
+    const s0 = si * 8, deg = cx.chordAt(s0);
+    let rhy, ivs;
+    if (pt[0] === 'A') {
+      rhy = motifR.slice(); ivs = motifI.slice();
+      if (pt === 'A1' || pt === 'A2') {
+        // вариация: сдвиг одной ноты, другая нота, иногда проходящая шестнадцатая
+        if (rhy.length > 2 && rnd() < 0.6) { const k = 1 + Math.floor(rnd() * (rhy.length - 1)); rhy[k] = clamp(rhy[k] + pick([-1, 1]), rhy[k - 1] + 0.5, 7.5); }
+        if (ivs.length && rnd() < 0.7) { const k = Math.floor(rnd() * ivs.length); ivs[k] = clamp(ivs[k] + pick([-1, 1, 2]), -4, 4); }
       }
-      const dist = (a, b) => a.reduce((t, x, i) => t + Math.abs(x - (b[i] ?? b[b.length - 1])), 0);
-      const v = prevV ? cands.reduce((a, b) => (dist(b, prevV) < dist(a, prevV) ? b : a)) : (cands.find(w => w[0] >= 0 && w[0] <= 7) || cands[0]);
-      prevV = v;
-      const hits = [...rh].map((x, i) => (x === 'x' ? i : -1)).filter(i => i >= 0);
-      hits.forEach((h, j) => {
-        const l = (j + 1 < hits.length ? hits[j + 1] : 8) - h;
-        for (const n of v) if (s0 + h < L) notes.push({ s: s0 + h, l: P.sustain ? l : Math.min(l, 2), n, v: 0.7 });
-      });
+    } else if (pt[0] === 'B') {
+      rhy = rhythmSeg(Math.min(2, level + pick([0, 1])));
+      if (!rhy.length) rhy = [0, 2];
+      ivs = []; for (let k = 1; k < rhy.length; k++) ivs.push(-(motifI[(k - 1) % Math.max(1, motifI.length)] || pick([1, -1])));   // обращение контура
+    } else {
+      // каденция: реже, вниз по ступеням к звуку аккорда, последняя нота длинная
+      rhy = pick([[0, 2, 4], [0, 3, 4], [0, 1, 2, 4], [0, 4], [0, 2, 3, 4]]);
+      ivs = rhy.slice(1).map(() => pick([-1, -1, 1, -2]));
     }
-  } else if (style === 'bass') {
-    // бас — по бочке, если она есть; иначе по ритму жанра; иногда октава вверх и проходящая нота
-    const kick = state.channels.find(c => !isAudio(c) && roleOf(SOUNDS[c.sound]) === 'kick' && !isMel(c.sound));
-    let ons = kick ? kick.steps.slice(0, L).map((v, i) => (v ? i : -1)).filter(i => i >= 0) : [];
-    if (ons.length < 2) ons = [...pick(['x.........x.....', 'x......x..x.....', 'x.....x...x..x..', 'x..x......x.....'])].map((x, i) => (x === 'x' ? i : -1)).filter(i => i >= 0).flatMap(i => (L > 16 ? [i, i + 16] : [i]));
-    for (let s = 8; s < L; s += 8) if (!ons.includes(s) && rnd() < 0.5) ons.push(s);
-    ons.sort((a, b) => a - b);
-    ons.forEach((s, j) => {
-      const deg = chordAt(s), next = j + 1 < ons.length ? ons[j + 1] : L;
-      let d = deg > 4 ? deg - 7 : deg;
-      if (j > 0 && rnd() < 0.18) d += 7;                                 // октава вверх
-      else if (j === ons.length - 1 && rnd() < 0.4) d += pick([4, 7]);   // в конце — квинта или октава (под слайд)
-      add(s, next - s, d, 0.9);
+    rhy = [...new Set(rhy.filter(x => x >= 0 && x < 8))].sort((a, b) => a - b);
+    // первая нота фрагмента — звук аккорда рядом с прошлой (секвенция по гармонии)
+    const near = [];
+    for (const o of [-14, -7, 0, 7, 14]) for (const t of [0, 2, 4]) near.push(deg + t + o);
+    let d = nearest(near, pt[0] === 'B' ? last + pick([2, 3, -2]) : si === 0 ? center : last + (rnd() < 0.5 ? 1 : -1));
+    rhy.forEach((r, k) => {
+      if (k > 0) d += ivs[k - 1] ?? pick([1, -1]);
+      d = clamp(d, center - 6, center + 7);
+      notes.push({ s: s0 + r, d, alt: 0 });
     });
-  } else {
-    // подголосок: одна-две длинные ноты на аккорд — терция или квинта сверху
-    for (let s = 0; s < L; s += 8) {
-      const deg = chordAt(s), two = rnd() < 0.4;
-      add(s, two ? 4 : 8, 7 + deg + pick([2, 4]), 0.7);
-      if (two) add(s + 4, 4, 7 + deg + pick([0, 2, 4]), 0.65);
+    last = d;
+  });
+  // гармония: сильная доля — звук аккорда; неаккордовая на слабой — разрешается шагом
+  for (let k = 0; k < notes.length; k++) {
+    const nt = notes[k], deg = cx.chordAt(nt.s);
+    if (nt.s % 4 === 0 && !isChordTone(nt.d, deg)) nt.d += isChordTone(nt.d + 1, deg) ? 1 : -1;
+  }
+  // вводный тон: над доминантой (V) седьмая ступень повышается и идёт в тонику
+  for (let k = 0; k + 1 < notes.length; k++) {
+    const a = notes[k], b = notes[k + 1];
+    if (cx.chordAt(a.s) === 4 && mod7(a.d) === 6 && b.d === a.d + 1) a.alt = 1;
+  }
+  // последняя нота — корень или терция аккорда
+  const lastN = notes[notes.length - 1];
+  if (lastN) { const deg = cx.chordAt(lastN.s); lastN.d = nearest([0, 2].flatMap(t => [-7, 0, 7].map(o => deg + t + o)), lastN.d); }
+  // длительности: тянущийся звук — legato, короткий — по-разному
+  notes.sort((a, b) => a.s - b.s);
+  notes.forEach((nt, k) => {
+    const next = k + 1 < notes.length ? notes[k + 1].s : L;
+    const gap = next - nt.s;
+    nt.l = k === notes.length - 1 ? Math.max(gap, 2) : P.sustain ? gap : Math.min(gap, pickW([gap, 1, 2, 0.5], [3, 2, 2, P.punch ? 1 : 0.3]));
+    nt.v = nt.s % 4 === 0 ? 0.95 : nt.s % 2 === 0 ? 0.8 : 0.66;
+  });
+  // форшлаги: короткая нота за 1/32 до сильной
+  const extra = [];
+  for (let k = 1; k < notes.length; k++) {
+    const nt = notes[k], pv = notes[k - 1];
+    if (nt.s % 4 === 0 && nt.s - pv.s >= 1.5 && rnd() < 0.18) extra.push({ s: nt.s - 0.5, l: 0.5, d: nt.d + pick([1, -1]), alt: 0, v: 0.6 });
+  }
+  return notes.concat(extra).sort((a, b) => a.s - b.s);
+}
+// ---------- арпеджио ----------
+function genArpCand(ch, cx, P) {
+  const L = cx.L, center = pickCenter(ch, cx, P, 'arp');
+  const rate = P.space || P.sustain ? pick([2, 2, 4]) : pick([1, 2, 2]);
+  const shape = pick(['up', 'down', 'updown', 'skip', 'pedal']), span = pick([1, 2]);
+  const gaps = pick(['', 'xx.x', 'x.xx', 'xxx.', 'x.x.x..x']);
+  const notes = [];
+  for (let s = 0, k = 0; s < L; s += rate, k++) {
+    if (gaps && gaps[k % gaps.length] === '.') continue;
+    const deg = cx.chordAt(s), base = nearest([-7, 0, 7].map(o => deg + o), center - 2);
+    const seq = [];
+    for (let o = 0; o < span; o++) for (const t of [0, 2, 4]) seq.push(base + t + 7 * o);
+    let d;
+    if (shape === 'down') d = seq[seq.length - 1 - (k % seq.length)];
+    else if (shape === 'updown') { const cyc = seq.concat(seq.slice(1, -1).reverse()); d = cyc[k % cyc.length]; }
+    else if (shape === 'skip') d = seq[(k * 2) % seq.length];
+    else if (shape === 'pedal') d = k % 2 ? seq[1 + ((k >> 1) % (seq.length - 1))] : seq[0];
+    else d = seq[k % seq.length];
+    notes.push({ s, l: rate, d, alt: 0, v: k % 4 === 0 ? 0.9 : 0.7 });
+  }
+  return notes;
+}
+// ---------- аккорды: обращения с плавным голосоведением, иногда sus/add9, ритм — в ответ мелодии ----------
+function genChordsCand(ch, cx, P) {
+  const L = cx.L, center = pickCenter(ch, cx, P, 'chords');
+  const rh = P.sustain ? pick(['x.......', 'x...x...', 'x.....x.', 'x......x']) : pick(['x..x..x.', 'x...x...', 'x..x....', '..x...x.', 'x.x...x.', 'x..x.x..', '.x..x..x']);
+  const sev = rnd() < (state.bpm < 100 ? 0.65 : 0.3), color = pick(['', '', 'sus2', 'add9']);
+  const notes = [];
+  let prevV = null;
+  for (let s0 = 0; s0 < L; s0 += 8) {
+    const deg = cx.chordAt(s0);
+    let ts = sev ? [0, 2, 4, 6] : [0, 2, 4];
+    if (color === 'sus2' && rnd() < 0.5) ts = ts.map(t => (t === 2 ? 1 : t));
+    if (color === 'add9' && rnd() < 0.5) ts = ts.concat([8]);
+    const cands = [];
+    for (let r = 0; r < ts.length; r++) for (const o of [-7, 0, 7]) {
+      const v = ts.map((t, i) => deg + t + (i < r ? 7 : 0) + o).sort((a, b) => a - b);
+      if (Math.abs((v[0] + v[v.length - 1]) / 2 - center) <= 5) cands.push(v);
+    }
+    if (!cands.length) cands.push(ts.map(t => deg + t));
+    const dist = (a, b) => a.reduce((x, d, i) => x + Math.abs(d - (b[i] ?? b[b.length - 1])), 0);
+    const v = prevV ? cands.reduce((a, b) => (dist(b, prevV) + rnd() < dist(a, prevV) + rnd() ? b : a)) : pick(cands);
+    prevV = v;
+    const hits = [...rh].map((x, i) => (x === 'x' ? i : -1)).filter(i => i >= 0);
+    hits.forEach((h, j) => {
+      const l = (j + 1 < hits.length ? hits[j + 1] : 8) - h;
+      for (const d of v) notes.push({ s: s0 + h, l: P.sustain ? l : Math.min(l, pick([1, 2, 2, 3])), d, alt: 0, v: j === 0 ? 0.8 : 0.66 });
+    });
+  }
+  return notes;
+}
+// ---------- бас: по бочке, корень на смене аккорда, подходы шагом, октавы и слайды ----------
+function genBassCand(ch, cx, P) {
+  const L = cx.L, center = pickCenter(ch, cx, P, 'bass');
+  const kicks = [...cx.drums.kick].map((v, i) => (v ? i : -1)).filter(i => i >= 0);
+  let ons = kicks.length >= 2 && rnd() < 0.85 ? kicks.slice() : [...pick(['x.........x.....', 'x......x..x.....', 'x.....x...x..x..', 'x..x......x.....', 'x.......x.x.....'])].map((x, i) => (x === 'x' ? i : -1)).filter(i => i >= 0).flatMap(i => (L > 16 ? [i, i + 16] : [i]));
+  for (let s = 8; s < L; s += 8) if (!ons.includes(s) && rnd() < 0.55) ons.push(s);
+  if (rnd() < 0.5) ons.push(L - pick([1, 2, 3]));
+  ons = [...new Set(ons.filter(s => s < L))].sort((a, b) => a - b);
+  const notes = [];
+  ons.forEach((s, j) => {
+    const deg = cx.chordAt(s), root = nearest([-7, 0, 7].map(o => deg + o), center);
+    let d = root;
+    const nextS = j + 1 < ons.length ? ons[j + 1] : L;
+    if (s % 8 !== 0 && rnd() < 0.35) d = root + pick([4, 7, -3, 2]);            // квинта, октава, нижний подход
+    if (nextS % 8 === 0 && nextS - s <= 2 && nextS < L) {                      // подход шагом к новому аккорду
+      const nr = nearest([-7, 0, 7].map(o => cx.chordAt(nextS) + o), center);
+      d = nr + pick([1, -1]);
+    }
+    notes.push({ s, l: nextS - s, d, alt: 0, v: s % 4 === 0 ? 0.95 : 0.8 });
+  });
+  return notes;
+}
+// ---------- подголосок: длинные ноты-«направляющие» (терции и септимы), против движения мелодии ----------
+function genCounterCand(ch, cx, P) {
+  const L = cx.L, center = pickCenter(ch, cx, P, 'counter'), notes = [];
+  let prev = center;
+  for (let s = 0; s < L; s += 8) {
+    const deg = cx.chordAt(s), split = rnd() < 0.45;
+    const g = [2, 4, 6].flatMap(t => [-7, 0, 7].map(o => deg + t + o));
+    const d1 = nearest(g, prev + pick([-1, 0, 1]));
+    notes.push({ s, l: split ? 4 : 8, d: d1, alt: 0, v: 0.72 });
+    if (split) { const d2 = nearest(g.filter(x => x !== d1), d1 + pick([-1, 1])); notes.push({ s: s + 4, l: 4, d: d2, alt: 0, v: 0.66 }); prev = d2; } else prev = d1;
+  }
+  return notes;
+}
+const GEN = { melody: genMelodyCand, arp: genArpCand, chords: genChordsCand, bass: genBassCand, counter: genCounterCand };
+
+// ---------- оценка варианта по теории музыки и по тому, как он ляжет на бит ----------
+function scoreNotes(ch, cx, P, style, notes) {
+  if (!notes.length) return -1e9;
+  let sc = 0;
+  const ms = notes.map(nt => absM(ch, toSemi(nt)));
+  // 1) диссонанс с тем, что звучит в тот же момент: малая секунда/большая септима — плохо, тритон — подозрительно
+  notes.forEach((nt, k) => {
+    for (let h = Math.round(nt.s * 2); h < Math.min(cx.H, Math.round((nt.s + nt.l) * 2)); h++) {
+      for (const o of cx.sound[h]) {
+        const iv = Math.abs(ms[k] - o) % 12;
+        if (iv === 1 || iv === 11) sc -= h === Math.round(nt.s * 2) ? 3 : 1.2;
+        else if (iv === 6) sc -= 0.6;
+        else if (iv === 0 && Math.abs(ms[k] - o) === 0 && style === 'melody') sc -= 0.4;   // унисон с другой партией — теряется
+      }
+    }
+  });
+  // 2) гармония: сильная доля — звук аккорда; неаккордовая нота разрешается шагом
+  const mono = style === 'melody' || style === 'bass' || style === 'counter';
+  if (mono) {
+    notes.forEach((nt, k) => {
+      const deg = cx.chordAt(nt.s), ct = isChordTone(nt.d, deg, true);
+      if (nt.s % 4 === 0) sc += ct ? 1.6 : -2.2;
+      else if (!ct) { const nx = notes[k + 1]; sc += nx && Math.abs(nx.d - nt.d) === 1 ? 0.4 : -1; }
+    });
+  }
+  // 3) мелодическая линия
+  if (style === 'melody' || style === 'counter') {
+    const line = notes.filter(nt => nt.l >= 0.5);
+    let steps = 0, leaps = 0, recover = 0, same = 0, run = 0;
+    for (let k = 1; k < line.length; k++) {
+      const iv = toSemi(line[k]) - toSemi(line[k - 1]);
+      if (Math.abs(iv) <= 2 && iv !== 0) steps++;
+      if (Math.abs(iv) >= 5) {
+        leaps++;
+        const nx = line[k + 1];
+        if (nx && Math.sign(toSemi(nx) - toSemi(line[k])) === -Math.sign(iv) && Math.abs(toSemi(nx) - toSemi(line[k])) <= 3) recover++;
+      }
+      if (iv === 0) { run++; if (run >= 2) same++; } else run = 0;
+      if (Math.abs(iv) > 9) sc -= 2.5;
+    }
+    const n = Math.max(1, line.length - 1), stepR = steps / n;
+    if (style === 'melody') {
+      sc -= Math.abs(stepR - 0.65) * 8;
+      sc += recover * 1.2 - (leaps - recover) * 1.0 - same * 1.5;
+      const range = Math.max(...ms) - Math.min(...ms);
+      sc -= range < 7 ? (7 - range) * 1.2 : range > 16 ? (range - 16) * 1.5 : 0;
+      const pcs = new Set(ms.map(m => m % 12)).size;
+      sc += Math.min(pcs, 6) * 0.6;
+      // кульминация: самая высокая нота — одна и во второй половине
+      const top = Math.max(...ms), tops = ms.filter(m => m === top).length, ti = ms.indexOf(top);
+      if (tops === 1) sc += 1.5;
+      if (notes[ti] && notes[ti].s >= cx.L * 0.35 && notes[ti].s <= cx.L * 0.85) sc += 1;
+      // ритм: разные длительности, немного синкоп, мотив узнаётся во второй половине
+      sc += Math.min(new Set(notes.map(nt => nt.l)).size, 4) * 0.5;
+      const sync = notes.filter(nt => nt.s % 2 !== 0).length / notes.length;
+      sc -= Math.abs(sync - 0.28) * 4;
+      const dens = notes.length / (cx.L / 16), want = P.sustain ? 4 : P.space ? 6 : P.punch ? 10 : 8;
+      sc -= Math.abs(dens - want) * 0.35;
+      const lastN = notes[notes.length - 1];
+      if (lastN.l >= 2) sc += 1;
+      if (isChordTone(lastN.d, cx.chordAt(lastN.s)) && [0, 2].includes(mod7(lastN.d - cx.chordAt(lastN.s)))) sc += 1.5;
+      // противодвижение к другой мелодии — красиво
+      for (const ln of cx.melLines) {
+        let contra = 0, par = 0;
+        for (let k = 1; k < line.length; k++) {
+          const a = ln.filter(x => x.s <= line[k - 1].s).pop(), b = ln.filter(x => x.s <= line[k].s).pop();
+          if (!a || !b || a === b) continue;
+          const d1 = Math.sign(toSemi(line[k]) - toSemi(line[k - 1])), d2 = Math.sign(b.m - a.m);
+          if (d1 && d2) d1 === -d2 ? contra++ : par++;
+        }
+        sc += (contra - par) * 0.3;
+      }
     }
   }
-  // свой сэмпл держим около его родной высоты (иначе «пищит» или «бубнит»)
-  if (snd.user && notes.length) {
-    const avg = notes.reduce((a, nt) => a + nt.n, 0) / notes.length + state.key - snd.root;
-    const sh = -12 * Math.round(avg / 12);
-    if (sh) for (const nt of notes) nt.n += sh;
+  // 4) перекличка с остальными партиями: часть нот — в паузах других, а не всё поверх
+  const onH = notes.map(nt => Math.round(nt.s * 2));
+  const busy = onH.filter(h => cx.mOn[h] > 0).length / onH.length;
+  if (cx.regs.length || cx.lowTop > 0) {
+    const want = style === 'chords' ? 0.45 : style === 'bass' ? 0.5 : 0.35;
+    sc -= Math.abs(busy - want) * 5;
   }
-  const lo = nLo(ch), hi = nHi(ch);
-  ch.notes = notes.filter(nt => nt.n >= lo && nt.n <= hi);
-  return { style, prog };
+  // 5) бас: корень на смене аккорда, в такт с бочкой, не на снейре/клэпе, ниже остальных
+  if (style === 'bass') {
+    notes.forEach(nt => {
+      const i = Math.floor(nt.s);
+      if (nt.s % 8 === 0) sc += mod7(nt.d - cx.chordAt(nt.s)) === 0 ? 2 : -2;
+      if (cx.drums.kick[i]) sc += 0.8;
+      if (cx.drums.snare[i] || cx.drums.clap[i]) sc -= 1;
+    });
+    if (cx.regs.length && Math.max(...ms) > Math.min(...cx.regs) - 3) sc -= 4;
+  }
+  // 6) аккорды и арпеджио: не перекрывают мелодию по высоте, движение верхнего голоса плавное
+  if ((style === 'chords' || style === 'arp') && cx.regs.length) {
+    const lowMel = Math.min(...cx.regs), topMe = Math.max(...ms);
+    if (topMe > lowMel + 2) sc -= (topMe - lowMel - 2) * 0.8;
+  }
+  if (style === 'arp') sc -= Math.max(0, (Math.max(...ms) - Math.min(...ms)) - 19) * 0.5;
+  return sc;
 }
-function melodyButton(ch, style = 'auto') {
-  const snd = SOUNDS[ch.sound];
-  if (isAudio(ch)) return;
-  pushUndo();
-  if (!isMel(ch.sound)) {
-    if (!snd.user) { toast('Мелодию пишут бас и мелодические звуки — выбери их в канале'); return; }
-    setSampleMel(snd, true, false);   // свой звук переводим в «Ноты»
-    const meta = library.find(sm => sm.id === snd.id);
-    if (meta) { meta.mel = true; idb('readwrite', st => st.put(meta, meta.id), 'samples').catch(() => {}); }
+const sleep0 = () => new Promise(r => setTimeout(r, 0));
+async function composeNotes(ch, style, P, cx, tries, onProgress) {
+  let best = null, bs = -Infinity;
+  const gen = GEN[style];
+  for (let k = 0; k < tries; k++) {
+    const cand = gen(ch, cx, P);
+    const s = scoreNotes(ch, cx, P, style, cand) + rnd() * 0.8;   // немного случайности — каждый раз новая
+    if (s > bs) { bs = s; best = cand; }
+    if (k % 150 === 149) { onProgress(k / tries); await sleep0(); }
   }
-  const r = writeMelody(ch, style);
-  buildGrid(); save();
-  if (pr && pr.ch === ch) buildPianoRoll();
-  const roman = r.prog.map(d => ROMAN[d]).join('–');
-  toast(`${MEL_STYLES[r.style] || r.style} · ${NOTE[state.key]} минор · ${roman} — нажми ещё раз, будет другая`);
-  if (!playing) start();
+  return { notes: best, score: bs };
+}
+
+// ---------- ударные: каждый звук в свою щель, без наложений одного диапазона ----------
+const DRUM_AVOID = {                 // с чем не совпадать: [роль, штраф]
+  kick: [['snare', 6], ['clap', 6]],
+  snare: [['clap', 9], ['kick', 5]],
+  clap: [['snare', 9], ['kick', 5]],
+  perc: [['kick', 3], ['snare', 3], ['clap', 3]],
+  open: [['kick', 2], ['hat', 1.5]],
+  hat: [['open', 2]],
+  fx: [],
+};
+function genDrumCand(role, cx) {
+  const L = cx.L, a = new Array(MAX).fill(0), bars = L / 16;
+  const back = cx.half ? [8] : [4, 12];
+  const has = r => cx.drums[r].some(v => v);
+  const bar = new Array(16).fill(0);
+  if (role === 'kick') {
+    bar[0] = 1;
+    const w = [0, 1, 2, 3, 1, 1, 3, 2, 0, 1, 3, 2, 1, 1, 2, 1];
+    const n = pick([2, 3, 3, 4, 5]);
+    for (let k = 0; k < n; k++) bar[pickW([...Array(16).keys()], w)] = 1;
+  } else if (role === 'snare' || role === 'clap') {
+    // главный бэкбит — у того, кого ещё нет; второй получает свои места: призраки, затакты, ответы
+    const other = role === 'snare' ? 'clap' : 'snare';
+    if (!has(other) || (role === 'snare' && rnd() < 0.15)) for (const b of back) bar[b] = 1;
+    else {
+      const spots = cx.half ? [3, 6, 7, 11, 14, 15] : [2, 7, 10, 15, 14, 3];
+      const n = pick([1, 2, 2, 3]);
+      for (let k = 0; k < n; k++) bar[pick(spots)] = 1;
+    }
+    if (rnd() < 0.3) bar[pick([13, 14, 15])] = 1;
+  } else if (role === 'hat') {
+    const grid = pick([2, 2, 1, 2, 4]);
+    for (let i = 0; i < 16; i += grid) bar[i] = 1;
+    if (grid === 1) for (let i = 0; i < 16; i++) if (rnd() < 0.2) bar[i] = 0;
+    const rolls = pick([0, 1, 1, 2, 2, 3]);
+    for (let k = 0; k < rolls; k++) bar[pick([3, 6, 7, 10, 11, 13, 14, 15])] = pick([2, 3, 3, 4]);
+    if (rnd() < 0.3) for (let i = 1; i < 16; i += 2) if (rnd() < 0.35) bar[i] = 1;
+  } else if (role === 'open') {
+    bar[pick([2, 6, 10, 14])] = 1;
+    if (rnd() < 0.4) bar[pick([2, 6, 10, 14])] = 1;
+  } else if (role === 'perc') {
+    const n = pick([2, 3, 3, 4, 5]);
+    for (let k = 0; k < n; k++) bar[pickW([...Array(16).keys()], [0, 2, 1, 3, 0, 2, 2, 3, 0, 2, 1, 3, 0, 2, 2, 3])] = 1;
+  } else {
+    bar[0] = rnd() < 0.6 ? 1 : 0;
+  }
+  // такты: второй — вариация первого (сдвиг/добавление/снятие 1–2 ударов)
+  for (let b = 0; b < bars; b++) {
+    const v = bar.slice();
+    if (b > 0) for (let k = 0; k < pick([1, 1, 2]); k++) { const i = Math.floor(rnd() * 16); if (i !== 0 || role !== 'kick') v[i] = v[i] ? 0 : (role === 'hat' ? pick([1, 1, 2]) : 1); }
+    for (let i = 0; i < 16; i++) a[b * 16 + i] = v[i];
+  }
+  return a;
+}
+function scoreDrums(role, cx, a) {
+  const L = cx.L;
+  let sc = 0;
+  const hits = a.slice(0, L).map(v => (v ? 1 : 0)), n = hits.reduce((x, y) => x + y, 0) / (L / 16);
+  for (const [r, pen] of DRUM_AVOID[role] || []) for (let i = 0; i < L; i++) if (hits[i] && cx.drums[r][i]) sc -= pen;
+  const want = { kick: 4, snare: 2, clap: 2, hat: 9, open: 1.5, perc: 3.5, fx: 1 }[role] || 3;
+  sc -= Math.abs(n - want) * 1.2;
+  if (role === 'kick') { if (!hits[0]) sc -= 5; sc += hits.filter((h, i) => h && i % 4 !== 0).length * 0.4; }
+  if (role === 'hat') { const rolls = a.slice(0, L).filter(v => v > 1).length / (L / 16); sc -= Math.abs(rolls - 1.5) * 1.5; }
+  if (role === 'perc') sc += hits.filter((h, i) => h && i % 2 === 1).length * 0.4;
+  // такты похожи, но не копия
+  if (L > 16) { let same = 0; for (let i = 0; i < 16; i++) if (hits[i] === hits[i + 16]) same++; sc -= Math.abs(same / 16 - 0.85) * 6; }
+  return sc;
+}
+async function composeDrums(role, cx, tries) {
+  let best = null, bs = -Infinity;
+  for (let k = 0; k < tries; k++) {
+    const a = genDrumCand(role, cx), s = scoreDrums(role, cx, a) + rnd() * 0.5;
+    if (s > bs) { bs = s; best = a; }
+    if (k % 200 === 199) await sleep0();
+  }
+  return best;
+}
+
+let composing = false;
+async function melodyButton(ch, style = 'auto') {
+  const snd = SOUNDS[ch.sound];
+  if (isAudio(ch) || composing) return;
+  const role = roleOf(snd);
+  if (snd.loop) { toast('Это луп — он ставится один раз на свою длину. Подогнать его под темп можно в ⚙'); return; }
+  composing = true;
+  try {
+    pushUndo();
+    const cx = beatContext(ch);
+    // ударные — своя партия, которая не лезет на соседей
+    if (DRUM_CATS.includes(role) || role === 'fx') {
+      toast('Слушаю бит и подбираю партию…');
+      const a = await composeDrums(role, cx, 3000);
+      if (isMel(ch.sound)) ch.notes = a.slice(0, cx.L).map((v, i) => (v ? { s: i, l: 1, n: (snd.user ? snd.root : 0) - state.key, v: 0.9 } : null)).filter(Boolean);
+      else ch.steps = a;
+      buildGrid(); save();
+      if (pr && pr.ch === ch) buildPianoRoll();
+      const names = { kick: 'Бочка', snare: 'Снейр', clap: 'Клэп', hat: 'Хэты', open: 'Открытый хэт', perc: 'Перкуссия', fx: 'FX' };
+      toast(`${names[role]}: новая партия — не совпадает со ${role === 'clap' ? 'снейром' : role === 'snare' ? 'клэпом' : 'соседями по частотам'}. Нажми ещё раз — будет другая`);
+      if (!playing) start();
+      return;
+    }
+    if (!isMel(ch.sound)) {
+      if (!snd.user) { toast('Мелодию пишут бас и мелодические звуки — выбери их в канале'); return; }
+      setSampleMel(snd, true, false);   // свой звук переводим в «Ноты»
+      const meta = library.find(sm => sm.id === snd.id);
+      if (meta) { meta.mel = true; idb('readwrite', st => st.put(meta, meta.id), 'samples').catch(() => {}); }
+    }
+    const P = soundProfile(ch);
+    if (style === 'auto') {
+      if (P.low || role === 'bass') style = 'bass';
+      else if (P.sustain) style = cx.regs.length ? pick(['chords', 'counter', 'melody']) : pick(['chords', 'chords', 'melody']);
+      else style = cx.regs.length ? pick(['melody', 'arp', 'arp', 'chords']) : pick(['melody', 'melody', 'melody', 'arp']);
+    }
+    const tries = style === 'melody' ? 6000 : 2500;
+    const r = await composeNotes(ch, style, P, cx, tries, f => toast(`Пишу: ${MEL_STYLES[style]} — слушаю бит и перебираю варианты… ${Math.round(f * 100)}%`));
+    const lo = nLo(ch), hi = nHi(ch);
+    ch.notes = r.notes.map(nt => ({ s: nt.s, l: Math.max(0.5, Math.min(nt.l, cx.L - nt.s)), n: toSemi(nt), v: nt.v ?? 0.85 })).filter(nt => nt.s < cx.L && nt.n >= lo && nt.n <= hi);
+    buildGrid(); save();
+    if (pr && pr.ch === ch) buildPianoRoll();
+    const roman = cx.prog.map(d => ROMAN[d]).join('–');
+    toast(`${MEL_STYLES[style]} · ${NOTE[state.key]} минор · ${roman} · из ${tries} вариантов выбран лучший под этот бит — нажми ещё раз, будет другая`);
+    if (!playing) start();
+  } finally { composing = false; }
 }
 function randomize() {
   pushUndo();
