@@ -257,6 +257,11 @@
   #tSpec{width:240px;height:48px;display:block}
   #stopAll{align-self:center}
 
+  /* меню канала по ПКМ */
+  .ctxmenu{position:fixed;z-index:80;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:5px;display:flex;flex-direction:column;min-width:210px;box-shadow:0 12px 30px #000a}
+  .ctxmenu button{background:none;border:0;color:var(--text);text-align:left;padding:8px 10px;border-radius:7px;font:inherit;cursor:pointer}
+  .ctxmenu button:hover{background:var(--panel2)}
+
   /* мои звуки */
   .smpbox{width:min(760px,100%)}
   .smpdir{margin:14px 0 4px;color:var(--mute);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
@@ -1876,6 +1881,7 @@ function normalize(src) {
     if (typeof c.vol === 'number' && isFinite(c.vol)) ch.vol = clamp(c.vol, 0, 1.5);
     if (typeof c.pan === 'number' && isFinite(c.pan)) ch.pan = clamp(c.pan, -1, 1);
     ch.mute = !!c.mute; ch.solo = !!c.solo;
+    if (!isAudio(ch) && typeof c.label === 'string' && c.label.trim()) ch.label = c.label.trim().slice(0, 40);
     ch.fx = normalizeFx(c.fx);
     if (SOUNDS[c.sound].user) ch.smp = normSmp(c.smp, SOUNDS[c.sound]);
     if (SOUNDS[c.sound].wave) ch.synth = normSynth(c.synth, c.sound);
@@ -2478,7 +2484,8 @@ function buildGrid() {
       });
     } else {
       sel = el('select', 'snd', opts);
-      sel.value = ch.sound; sel.title = 'Звук канала';
+      sel.value = ch.sound; sel.title = 'Звук канала · ПКМ — клонировать, переименовать';
+      if (ch.label) for (const o of sel.options) if (o.value === ch.sound) o.textContent = ch.label;   // имя канала (например, клон «#2»)
       sel.addEventListener('change', () => { pushUndo(); changeSound(ch, sel.value); });
     }
 
@@ -2526,6 +2533,7 @@ function buildGrid() {
     else if (own) { synb.textContent = '⚙'; synb.title = 'Настройки звука — как Channel settings во FL (cut itself, лупы, обрезка, реверс…)'; synb.addEventListener('click', () => openChSet(ch)); }
     else synb.style.visibility = 'hidden';
     head.append(pad, sel, synb, prb, mlb, fxb, m, s, vol, pan, del);
+    head.addEventListener('contextmenu', e => { e.preventDefault(); chMenu(e, ch, () => del.click()); });
     g.append(head);
 
     if (isAudio(ch)) { g.append(audioRow(ch, color)); return; }
@@ -2606,6 +2614,8 @@ function convertChannel(ch, nowMel, n0 = 0) {
   }
 }
 function changeSound(ch, sound) {
+  // клон «Kick #2» → «Snare #2»: номер остаётся, имя — по новому звуку
+  if (ch.label) { const n = ch.label.match(/ #\d+$/); if (n && ch.label.slice(0, -n[0].length) === SOUNDS[ch.sound].name) ch.label = SOUNDS[sound].name + n[0]; }
   const wasMel = isMel(ch.sound), nowMel = isMel(sound);
   if (wasMel !== nowMel) convertChannel(ch, nowMel, SOUNDS[sound].user ? SOUNDS[sound].root - state.key : 0);
   if (CATS[SOUNDS[ch.sound].cat] !== CATS[SOUNDS[sound].cat]) ch.vol = CATS[SOUNDS[sound].cat].vol;
@@ -2949,30 +2959,50 @@ function generateBeat(gKey) {
 }
 
 // каждый канал получает случайный свой звук той же роли (бочка — бочку, 808 — 808); mix — примерно половина каналов
+// автоподбор из своих звуков — одиночными звуками. Лупы друг на друга не накладываем: в бите самое большее один луп,
+// а целые драм-лупы автоподбор не ставит вовсе — поверх собранного бита они превращаются в кашу
 function pickMySounds(mix) {
-  const byRole = {};
-  for (const sm of library) { const snd = SOUNDS[sm.id]; if (snd) (byRole[snd.role] = byRole[snd.role] || []).push(snd); }
-  const roles = new Set(Object.keys(byRole));
-  // в бите нет канала нужной роли, а в паке такие звуки есть — добавляем канал
-  for (const role of ['kick', 'snare', 'hat', 'bass', 'melody']) {
-    if (!roles.has(role) || state.channels.length >= MAX_CH) continue;
-    if (!state.channels.some(c => !isAudio(c) && roleOf(SOUNDS[c.sound]) === role)) state.channels.push(newChannel(pick(byRole[role]).id));
+  const byRole = {}, loops = {};
+  for (const sm of library) {
+    const snd = SOUNDS[sm.id];
+    if (!snd || snd.role === 'drums') continue;
+    const box = snd.loop ? loops : byRole;
+    (box[snd.role] = box[snd.role] || []).push(snd);
   }
-  let used = 0;
-  const left = new Set(state.channels.filter(c => !isAudio(c)).map(c => c.id));
+  let loopUsed = false, used = 0;
+  // луп — только если одиночных звуков этой роли нет, и только один на весь бит
+  const choose = role => {
+    if (byRole[role]) return pick(byRole[role]);
+    if (!loopUsed && loops[role] && rnd() < 0.5) { loopUsed = true; return pick(loops[role]); }
+    return null;
+  };
+  const drop = new Set();
   for (const ch of state.channels) {
     if (isAudio(ch)) continue;
-    const list = byRole[roleOf(SOUNDS[ch.sound])];
-    if (!list) continue;
-    if (mix && rnd() < 0.5 && !SOUNDS[ch.sound].user) continue;
-    const snd = pick(list);
+    const cur = SOUNDS[ch.sound], role = roleOf(cur);
+    if (mix && rnd() < 0.5 && !cur.user) continue;
+    const snd = role === 'drums' ? null : choose(role);
+    if (!snd) {
+      // лупы из прошлого подбора: драм-луп и второй луп убираем, один луп роли без одиночных звуков можно оставить
+      if (cur.user && cur.loop) { if (role !== 'drums' && !loopUsed) { loopUsed = true; used++; } else drop.add(ch.id); }
+      continue;
+    }
     if (snd.id !== ch.sound) {
       if (isMel(ch.sound) !== snd.mel) convertChannel(ch, snd.mel, snd.root - state.key);
-      if (!SOUNDS[ch.sound].user) ch.vol = CATS.user.vol;
-      ch.sound = snd.id; procCache.delete(ch.id);
+      if (!cur.user) ch.vol = CATS.user.vol;
+      ch.sound = snd.id; procCache.delete(ch.id); delete ch.label;
       Object.assign(ch, { sname: snd.name, smel: snd.mel, sroot: snd.root, sloop: snd.loop, sbeats: snd.beats, smp: smpDefaults(snd) });
     }
     used++;
+  }
+  if (drop.size) {
+    state.channels = state.channels.filter(c => !drop.has(c.id));
+    state.song.clips = state.song.clips.filter(c => !drop.has(c.ch) && !drop.has(c.a));
+  }
+  // в бите нет канала нужной роли, а в паке есть одиночные звуки — добавляем канал
+  for (const role of ['kick', 'snare', 'hat', 'bass', 'melody']) {
+    if (!byRole[role] || state.channels.length >= MAX_CH) continue;
+    if (!state.channels.some(c => !isAudio(c) && roleOf(SOUNDS[c.sound]) === role)) { state.channels.push(newChannel(pick(byRole[role]).id)); used++; }
   }
   return used;
 }
@@ -3497,6 +3527,59 @@ function randomize() {
   if (pr) buildPianoRoll();
   toast(info + (mine ? ` · своих звуков: ${mine}` : ''));
 }
+
+// ================= меню канала по ПКМ: клон, имя, удалить (как во FL) =================
+function cloneChannel(ch) {
+  if (state.channels.length >= MAX_CH) { toast(`Каналов уже ${MAX_CH} — больше нельзя`); return; }
+  pushUndo();
+  commitPattern();
+  const c = JSON.parse(JSON.stringify(ch));
+  c.id = uid(); c.solo = false;
+  for (const f of c.fx || []) f.id = uid();
+  const base = chLabel(ch).replace(/ #\d+$/, '');
+  const taken = new Set(state.channels.map(chLabel));
+  let k = 2;
+  while (taken.has(`${base} #${k}`)) k++;
+  const name = `${base} #${k}`.slice(0, 40);
+  if (isAudio(c)) c.name = name; else c.label = name;
+  // те же шаги и ноты во всех паттернах
+  for (const p of state.patterns) { const d = p.data[ch.id]; if (d) p.data[c.id] = { s: d.s.slice(), n: d.n.map(nt => ({ ...nt })) }; }
+  // клон встаёт после своих: Kick, Kick #2, Kick #3
+  let at = state.channels.indexOf(ch);
+  state.channels.forEach((x, i) => { if (chLabel(x).replace(/ #\d+$/, '') === base) at = Math.max(at, i); });
+  state.channels.splice(at + 1, 0, c);
+  applyPattern(state);
+  buildGrid(); renderPlaylist(); save();
+  if (E) applyMix(E, true);
+  toast(`Клон «${name}»: тот же звук, эффекты, громкость, панорама и ноты`);
+}
+function renameChannel(ch) {
+  const cur = chLabel(ch), v = window.prompt('Имя канала', cur);
+  if (v === null) return;
+  pushUndo();
+  const t = v.trim().slice(0, 40);
+  if (isAudio(ch)) { if (t) ch.name = t; }
+  else if (!t || t === SOUNDS[ch.sound].name) delete ch.label; else ch.label = t;
+  buildGrid(); renderPlaylist(); save();
+}
+function chMenu(e, ch, del) {
+  closeChMenu();
+  const m = el('div', 'ctxmenu'); m.id = 'ctxMenu';
+  const item = (label, fn) => { const b = el('button', '', label); b.addEventListener('click', () => { closeChMenu(); fn(); }); m.append(b); };
+  item('Клонировать (Clone)', () => cloneChannel(ch));
+  item('Переименовать…', () => renameChannel(ch));
+  if (SOUNDS[ch.sound] && SOUNDS[ch.sound].user) item('Настройки звука ⚙', () => openChSet(ch));
+  if (!isAudio(ch)) item('Написать партию ✨', () => melodyButton(ch));
+  item('Удалить канал', del);
+  document.body.append(m);
+  const r = m.getBoundingClientRect();
+  m.style.left = Math.min(e.clientX, innerWidth - r.width - 6) + 'px';
+  m.style.top = Math.min(e.clientY, innerHeight - r.height - 6) + 'px';
+}
+function closeChMenu() { const m = $('#ctxMenu'); if (m) m.remove(); }
+window.addEventListener('pointerdown', e => { if (!e.target.closest || !e.target.closest('#ctxMenu')) closeChMenu(); }, true);
+window.addEventListener('keydown', e => { if (e.key === 'Escape') closeChMenu(); });
+window.addEventListener('blur', closeChMenu);
 
 // ================= пианоролл =================
 let pr = null, prColW = 28, prRowH = 16, prSnap = 1, prLastLen = 2, prDrag = null;
@@ -5681,7 +5764,7 @@ function trackChunk(events, endTick) {
   bytes.push(...vlq(Math.max(0, endTick - last)), 0xff, 0x2f, 0);  // конец дорожки = конец паттерна
   return [0x4d, 0x54, 0x72, 0x6b, ...u32be(bytes.length), ...bytes];
 }
-const chLabel = ch => (isAudio(ch) ? ch.name : SOUNDS[ch.sound].name);
+const chLabel = ch => (isAudio(ch) ? ch.name : ch.label || SOUNDS[ch.sound].name);
 // паттерны, которые попадут в экспорт: в песне — все из плейлиста, иначе текущий
 const usedPatterns = () => (isSong() ? state.patterns.filter(p => state.song.clips.some(c => c.p === p.id)) : [curPat()]);
 function hasContent(ch) {
