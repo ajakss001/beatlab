@@ -245,6 +245,8 @@
   .smpitem .pn small{color:var(--mute);margin-left:6px}
   .smpitem .btn{padding:5px 9px}
   .smpitem .mode.on{border-color:#c6ff3d;color:#c6ff3d}
+  .smpitem .smproot{width:58px}
+  .smpitem .smproot:disabled{opacity:.35}
   #dropHint{position:fixed;inset:0;z-index:60;background:#05050acc;border:3px dashed #c6ff3d;display:flex;align-items:center;justify-content:center;pointer-events:none;font-size:22px;font-weight:800;color:#c6ff3d}
   #dropHint[hidden]{display:none}
 
@@ -345,6 +347,11 @@
       <option value="phonk">Phonk</option>
       <option value="boombap">Boom Bap</option>
       <option value="lofi">Lo-fi</option>
+    </select>
+    <select id="rndSnd" title="Какие звуки берёт случайный бит">
+      <option value="keep">Звуки: как в бите</option>
+      <option value="mine">Звуки: из моих</option>
+      <option value="mix">Звуки: мои + встроенные</option>
     </select>
     <button id="random" class="btn" title="Гармония, бас и мелодия по теории музыки">🎲 Случайный бит</button>
     <button id="clear" class="btn" title="Очистить текущий паттерн">Очистить паттерн</button>
@@ -524,7 +531,8 @@
   <div class="projbox smpbox">
     <div class="drawhead"><span class="ttl">🎧 Мои звуки</span><span class="spacer"></span><button id="smpClose" class="btn">✕</button></div>
     <div class="recnote">Загрузи свои сэмплы и паки — те же, что лежат у тебя для FL Studio. Подходят WAV, MP3, OGG, FLAC. Звуки хранятся в этом браузере и появляются в списке звуков канала, сверху, в разделе «Мои звуки». Файлы и папки можно просто перетащить в окно BEATLAB.<br>
-    <b>Удары</b> — звук ставится клетками, как барабан. <b>Ноты</b> — играешь звук в пианоролле, на C5 он звучит как в файле (как во FL).</div>
+    <b>Удары</b> — звук ставится клетками, как барабан. <b>Ноты</b> — играешь звук в пианоролле. Тональность звука BEATLAB берёт из названия («808 Dark F#» — фа-диез), её можно поправить в списке рядом; если тональности нет — звук считается в до (C5), как во FL.<br>
+    <b>Случайный бит</b> с выбором «Звуки: из моих» сам подберёт бочку, снейр, хэты, 808 и мелодию из этих звуков — по названиям файлов и папок.</div>
     <div class="projrow"><button id="smpFiles" class="btn primary">Загрузить файлы</button><button id="smpDir" class="btn">Загрузить папку с паком</button><input id="smpSearch" type="text" class="txt" placeholder="Поиск по названию"></div>
     <input id="smpFileIn" type="file" accept="audio/*,.wav,.mp3,.ogg,.flac,.m4a,.aif,.aiff" multiple hidden>
     <input id="smpDirIn" type="file" webkitdirectory multiple hidden>
@@ -915,32 +923,53 @@ const roleOf = snd => snd.role || snd.cat;
 const isUser = id => typeof id === 'string' && /^u_[0-9a-f]{16}$/.test(id);
 const sampleBufs = new Map();     // id → AudioBuffer
 let library = [];                 // звуки, загруженные в этот браузер: { id, name, folder, mel, size, addedAt }
-const DRUMISH = /kick|snare|clap|snap|hat|\bhh\b|\boh\b|crash|ride|cymbal|perc|rim|shaker|tom\b|conga|bongo|бочк|снейр|хэт|хет|тарел/i;
-const MELISH = /808|bass|sub\b|key|piano|pluck|lead|synth|melod|pad\b|bell|guitar|chord|string|flute|brass|choir|бас|мелод|пиан|гитар|аккорд/i;
-const guessMel = t => !DRUMISH.test(t) && MELISH.test(t);
-function guessRole(t, mel) {
-  if (mel) return /808|bass|sub\b|бас/i.test(t) ? 'bass' : 'melody';
-  return /kick|\bbd\b|бочк|кик/i.test(t) ? 'kick' : /snare|\bsd\b|снейр|снэр/i.test(t) ? 'snare' : /clap|snap|клэп|хлоп/i.test(t) ? 'clap'
-    : /open|\boh\b|crash|ride|cymbal|тарел/i.test(t) ? 'open' : /hat|\bhh\b|shaker|хэт|хет/i.test(t) ? 'hat'
-    : /perc|rim|tom\b|conga|bongo|cowbell|перк/i.test(t) ? 'perc' : 'fx';
+// слово целиком: соседние символы — не буквы (HH_01, BD-02, Kick1)
+const word = src => new RegExp(`(?<![a-zа-яё])(?:${src})(?![a-zа-яё])`, 'i');
+const ROLE_RX = {
+  kick: /kick|бочк|кик/i, kick2: word('bd|kik|kck'),
+  snare: /snare|снейр|снэр|малый/i, snare2: word('sd|snr|sn'),
+  clap: /clap|snap|клэп|клеп|хлоп|щелч/i,
+  open: /open|crash|ride|cymbal|splash|тарел|крэш/i, open2: word('oh|ohh|ohat'),
+  hat: /hat|shaker|хэт|хет|шейкер/i, hat2: word('hh|chh|ch|hhat'),
+  perc: /perc|rim|conga|bongo|cowbell|tamb|clave|block|перк/i, perc2: word('tom|toms'),
+  bass: /808|bass|бас/i, bass2: word('sub|reese'),
+};
+const MELISH = /808|bass|key|piano|pluck|lead|synth|melod|pad|bell|guitar|chord|string|flute|brass|choir|organ|arp|vox|бас|мелод|пиан|гитар|аккорд|синт|ключ/i;
+const has = (t, k) => ROLE_RX[k].test(t) || (ROLE_RX[k + '2'] ? ROLE_RX[k + '2'].test(t) : false);
+const drumRole = t => ['kick', 'snare', 'clap', 'open', 'hat', 'perc'].find(k => has(t, k)) || null;
+// сначала название файла, потом папка («Kicks/808 Kick.wav» — бочка, «808s/Dark.wav» — бас)
+const guessMel = (name, folder = '') => { const d = drumRole(name); if (d) return false; return MELISH.test(name) || has(name, 'bass') || (!drumRole(folder) && (MELISH.test(folder) || has(folder, 'bass'))); };
+function guessRole(name, folder, mel) {
+  if (mel) return has(name, 'bass') || (!MELISH.test(name) && has(folder, 'bass')) ? 'bass' : 'melody';
+  return drumRole(name) || drumRole(folder) || 'fx';
 }
-function registerSample(id, name, mel, folder = '') {
+// тональность из названия: «808 Dark F#», «Bass_C#m», «Keys (Gb min)» → 0–11 (до — 0); нет — звук считается в до
+const NOTE_PC = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+function guessRoot(name) {
+  const rx = /(?:^|[\s_\-\(\[.,])([A-G])(#|♯|b|♭|sharp|flat)?\s?(?:m|min|minor|maj|major|dur|moll)?(?=$|[\s_\-\)\].,\d])/g;
+  let m, pc = null;
+  while ((m = rx.exec(name))) pc = (NOTE_PC[m[1]] + (m[2] && /#|♯|sharp/.test(m[2]) ? 1 : m[2] ? -1 : 0) + 12) % 12;
+  return pc;
+}
+const leadish = t => /lead|pluck|bell|flute|whistle|arp|melod|vox|мелод|лид/i.test(t);
+function registerSample(id, name, mel, folder = '', root = null) {
   const old = SOUNDS[id];
   if (old) return old;
   name = String(name || 'Мой звук').slice(0, 60);
   mel = !!mel;
   return (SOUNDS[id] = {
-    id, cat: 'user', name, oct: 3, user: true, mel, gate: mel, layers: [], role: guessRole(name + ' ' + folder, mel),
+    id, cat: 'user', name, folder, oct: 3, user: true, mel, gate: mel, layers: [], role: guessRole(name, folder, mel),
+    root: Number.isInteger(root) ? clamp(root, 0, 11) : (guessRoot(name) ?? 0), lead: leadish(name + ' ' + folder),
     play: (e, t, out, v, f, gf, gate) => playSample(e, SOUNDS[id], t, out, v, f, gf, gate),
   });
 }
-// сэмпл звучит как есть на ноте C5 (как во FL), выше и ниже — быстрее и медленнее
+// сэмпл звучит как есть на своей ноте (как «root note» в сэмплере FL; по умолчанию C5), выше и ниже — быстрее и медленнее
 function playSample(eng, snd, t, out, vel, f, glideFrom, gate) {
   const buf = sampleBufs.get(snd.id);
   if (!buf) { loadSample(snd.id); return { gs: [], end: t }; }
   const c = eng.c, src = c.createBufferSource(), g = c.createGain();
   src.buffer = buf;
-  const base = mtof(60), rate = f ? f / base : 1;
+  const base = mtof(60 + (snd.root || 0)), rate = f ? f / base : 1;
   if (glideFrom) { src.playbackRate.setValueAtTime(glideFrom / base, t); src.playbackRate.exponentialRampToValueAtTime(rate, t + 0.09); }
   else src.playbackRate.value = rate;
   g.gain.value = vel;
@@ -1514,7 +1543,7 @@ function parsePattern(str) {
 function newChannel(sound) {
   const ch = { id: uid(), sound, steps: Array(MAX).fill(0), notes: [], vol: CATS[SOUNDS[sound].cat].vol, pan: 0, mute: false, solo: false, fx: [] };
   if (SOUNDS[sound].wave) ch.synth = synthFor(sound);
-  if (SOUNDS[sound].user) { ch.sname = SOUNDS[sound].name; ch.smel = SOUNDS[sound].mel; }
+  if (SOUNDS[sound].user) { ch.sname = SOUNDS[sound].name; ch.smel = SOUNDS[sound].mel; ch.sroot = SOUNDS[sound].root; }
   return ch;
 }
 function baseState() {
@@ -1607,7 +1636,7 @@ function normalize(src) {
   const seen = new Set(), idMap = new Map();  // старый id канала → канал (нужно, чтобы найти его данные в паттернах)
   for (const c of chans) {
     if (b.channels.length >= MAX_CH) break;
-    if (c && isUser(c.sound)) registerSample(c.sound, c.sname, c.smel);
+    if (c && isUser(c.sound)) registerSample(c.sound, c.sname, c.smel, '', Number.isInteger(c.sroot) ? c.sroot : null);
     if (!c || !SOUNDS[c.sound]) continue;
     const ch = newChannel(c.sound);
     if (typeof c.id === 'string' && /^c\w{1,12}$/.test(c.id) && !seen.has(c.id)) ch.id = c.id;
@@ -2348,10 +2377,10 @@ function convertChannel(ch, nowMel, n0 = 0) {
 }
 function changeSound(ch, sound) {
   const wasMel = isMel(ch.sound), nowMel = isMel(sound);
-  if (wasMel !== nowMel) convertChannel(ch, nowMel, SOUNDS[sound].user ? -state.key : 0);
+  if (wasMel !== nowMel) convertChannel(ch, nowMel, SOUNDS[sound].user ? SOUNDS[sound].root - state.key : 0);
   if (CATS[SOUNDS[ch.sound].cat] !== CATS[SOUNDS[sound].cat]) ch.vol = CATS[SOUNDS[sound].cat].vol;
   ch.sound = sound;
-  if (SOUNDS[sound].user) { ch.sname = SOUNDS[sound].name; ch.smel = SOUNDS[sound].mel; } else { delete ch.sname; delete ch.smel; }
+  if (SOUNDS[sound].user) { ch.sname = SOUNDS[sound].name; ch.smel = SOUNDS[sound].mel; ch.sroot = SOUNDS[sound].root; } else { delete ch.sname; delete ch.smel; delete ch.sroot; }
   if (SOUNDS[sound].wave && !ch.synth) ch.synth = synthFor(sound);
   if (syn && syn.ch === ch && !SOUNDS[sound].wave) closeSynth();
   buildGrid(); save();
@@ -2638,10 +2667,20 @@ function generateBeat(gKey) {
   let leadDone = false;
   for (const ch of state.channels) {
     const snd = SOUNDS[ch.sound], cat = roleOf(snd);
-    if (isMel(ch.sound) && cat === 'bass') { ch.notes = bassNotes(); continue; }
+    if (isMel(ch.sound) && cat === 'bass') {
+      ch.notes = bassNotes();
+      if (snd.user) { const sh = -12 * Math.round((state.key - snd.root) / 12); if (sh) for (const nt of ch.notes) nt.n += sh; }
+      continue;
+    }
     if (isMel(ch.sound)) {
-      if (!snd.gate && !leadDone) { ch.notes = leadNotes(G, chordAt, L, (snd.oct || 0) >= 4); leadDone = true; }
+      if ((snd.user ? snd.lead : !snd.gate) && !leadDone) { ch.notes = leadNotes(G, chordAt, L, (snd.oct || 0) >= 4); leadDone = true; }
       else ch.notes = chordNotes(G, prog, L);
+      if (snd.user) {
+        // сэмпл, поднятый на две октавы, «пищит» — держим ноты рядом с тональностью звука
+        const avg = ch.notes.reduce((a, nt) => a + nt.n, 0) / (ch.notes.length || 1) + state.key - snd.root;
+        const sh = -12 * Math.round(avg / 12);
+        if (sh) for (const nt of ch.notes) nt.n += sh;
+      }
       continue;
     }
     const a = Array(MAX).fill(0);
@@ -2661,14 +2700,49 @@ function generateBeat(gKey) {
   return `${G.name} · ${NOTE[state.key]} минор · ${prog.map(roman).join('–')} · ${state.bpm} BPM`;
 }
 
+// каждый канал получает случайный свой звук той же роли (бочка — бочку, 808 — 808); mix — примерно половина каналов
+function pickMySounds(mix) {
+  const byRole = {};
+  for (const sm of library) { const snd = SOUNDS[sm.id]; if (snd) (byRole[snd.role] = byRole[snd.role] || []).push(snd); }
+  const roles = new Set(Object.keys(byRole));
+  // в бите нет канала нужной роли, а в паке такие звуки есть — добавляем канал
+  for (const role of ['kick', 'snare', 'hat', 'bass', 'melody']) {
+    if (!roles.has(role) || state.channels.length >= MAX_CH) continue;
+    if (!state.channels.some(c => !isAudio(c) && roleOf(SOUNDS[c.sound]) === role)) state.channels.push(newChannel(pick(byRole[role]).id));
+  }
+  let used = 0;
+  const left = new Set(state.channels.filter(c => !isAudio(c)).map(c => c.id));
+  for (const ch of state.channels) {
+    if (isAudio(ch)) continue;
+    const list = byRole[roleOf(SOUNDS[ch.sound])];
+    if (!list) continue;
+    if (mix && rnd() < 0.5 && !SOUNDS[ch.sound].user) continue;
+    const snd = pick(list);
+    if (snd.id !== ch.sound) {
+      if (isMel(ch.sound) !== snd.mel) convertChannel(ch, snd.mel, snd.root - state.key);
+      if (!SOUNDS[ch.sound].user) ch.vol = CATS.user.vol;
+      ch.sound = snd.id; ch.sname = snd.name; ch.smel = snd.mel; ch.sroot = snd.root;
+    }
+    used++;
+  }
+  return used;
+}
 function randomize() {
   pushUndo();
   let g = $('#genre').value;
   if (g === 'auto') g = state.bpm <= 88 ? 'lofi' : state.bpm <= 100 ? 'boombap' : state.bpm <= 136 ? 'phonk' : pick(['trap', 'drill']);
+  const mode = $('#rndSnd').value;
+  let mine = 0;
+  if (mode !== 'keep') {
+    if (!library.length) toast('В «Мои звуки» пока пусто — бит соберётся на встроенных звуках');
+    else mine = pickMySounds(mode === 'mix');
+  }
   const info = generateBeat(g);
   syncControls(); buildGrid(); refreshTempoFx(); save();
+  if (E) applyMix(E, true);
+  preloadSamples();
   if (pr) buildPianoRoll();
-  toast(info);
+  toast(info + (mine ? ` · своих звуков: ${mine}` : ''));
 }
 
 // ================= пианоролл =================
@@ -5441,8 +5515,10 @@ async function hashId(bytes) {
 async function loadLibrary() {
   try { library = ((await idb('readonly', st => st.getAll(), 'samples')) || []).sort((a, b) => a.folder.localeCompare(b.folder) || a.name.localeCompare(b.name)); } catch (e) { library = []; }
   for (const sm of library) {
-    const snd = registerSample(sm.id, sm.name, sm.mel, sm.folder);
+    const snd = registerSample(sm.id, sm.name, sm.mel, sm.folder, sm.root);
     if (snd.mel !== !!sm.mel) setSampleMel(snd, !!sm.mel, false);
+    if (Number.isInteger(sm.root)) snd.root = sm.root;
+    snd.folder = sm.folder;
   }
   if (library.length) buildGrid();
 }
@@ -5464,11 +5540,11 @@ async function importSamples(files) {
       if (library.some(sm => sm.id === id)) { had++; continue; }
       const name = file.name.replace(/\.[^.]+$/, '').trim().slice(0, 60) || 'Мой звук';
       const dir = String(folder || 'Без папки').trim().slice(0, 40) || 'Без папки';
-      const meta = { id, name, folder: dir, mel: guessMel(name + ' ' + dir), size: bytes.byteLength, addedAt: Date.now() };
+      const meta = { id, name, folder: dir, mel: guessMel(name, dir), root: guessRoot(name), size: bytes.byteLength, addedAt: Date.now() };
       await idb('readwrite', st => st.put({ id, bytes }, id), 'sampleData');
       await idb('readwrite', st => st.put(meta, id), 'samples');
       library.push(meta);
-      registerSample(id, name, meta.mel, dir);
+      registerSample(id, name, meta.mel, dir, meta.root);
       added++;
     } catch (e) { bad++; }
   }
@@ -5481,22 +5557,33 @@ async function importSamples(files) {
   toast(parts.join(' · ') + (added ? ' — ищи их в списке звуков канала, сверху' : ''));
   if (list.length === 1 && lastId && $('#smp').hidden) previewSample(lastId);
 }
-function previewSample(id) {
+// tonic — послушать звук на тонике бита (видно, попадает ли он в лад)
+function previewSample(id, tonic = false) {
   ensureAudio();
   const snd = SOUNDS[id];
-  loadSample(id).then(ok => { if (ok) playSample(E, snd, ctx.currentTime + 0.01, E.bus, 0.9); });
+  const f = tonic && snd.mel ? mtof(60 + ((state.key - snd.root + 18) % 12 - 6) + snd.root) : null;
+  loadSample(id).then(ok => { if (ok) playSample(E, snd, ctx.currentTime + 0.01, E.bus, 0.9, f); });
 }
 // удары ↔ ноты: каналы с этим звуком переводятся сами
 function setSampleMel(snd, mel, store = true) {
   const chans = state.channels.filter(c => c.sound === snd.id);
   if (store && chans.length) pushUndo();
-  snd.mel = mel; snd.gate = mel; snd.role = guessRole(snd.name + ' ' + ((library.find(sm => sm.id === snd.id) || {}).folder || ''), mel);
-  for (const ch of chans) { convertChannel(ch, mel, -state.key); ch.smel = mel; }
+  snd.mel = mel; snd.gate = mel; snd.role = guessRole(snd.name, snd.folder || '', mel);
+  for (const ch of chans) { convertChannel(ch, mel, snd.root - state.key); ch.smel = mel; }
   if (!store) return;
   const meta = library.find(sm => sm.id === snd.id);
   if (meta) { meta.mel = mel; idb('readwrite', st => st.put(meta, meta.id), 'samples').catch(() => {}); }
   if (pr && chans.includes(pr.ch) && !mel) closePianoRoll();
   buildGrid(); save();
+}
+// тональность сэмпла: ноты в бите остаются на месте, меняется только то, как звук под них подстраивается
+function setSampleRoot(snd, pc) {
+  snd.root = pc;
+  for (const ch of state.channels) if (ch.sound === snd.id) ch.sroot = pc;
+  const meta = library.find(sm => sm.id === snd.id);
+  if (meta) { meta.root = pc; idb('readwrite', st => st.put(meta, meta.id), 'samples').catch(() => {}); }
+  save();
+  previewSample(snd.id, true);
 }
 function addSampleChannel(id) {
   if (state.channels.length >= MAX_CH) { toast(`Каналов уже ${MAX_CH} — больше нельзя`); return; }
@@ -5539,11 +5626,15 @@ function renderSamples() {
     const nts = el('button', 'btn mode' + (snd.mel ? ' on' : ''), 'Ноты');
     nts.title = 'Играть нотами в пианоролле (C5 — как в файле)';
     nts.addEventListener('click', () => { if (!snd.mel) { setSampleMel(snd, true); renderSamples(); } });
+    const root = el('select', 'smproot', NOTE.map((nm, i) => `<option value="${i}">${nm}</option>`).join(''));
+    root.value = snd.root; root.disabled = !snd.mel;
+    root.title = 'Тональность звука (на какой ноте он звучит как в файле). Берётся из названия, например «808 F#»';
+    root.addEventListener('change', () => setSampleRoot(snd, +root.value));
     const add = el('button', 'btn primary', '+ В бит'); add.title = 'Новый канал с этим звуком';
     add.addEventListener('click', () => addSampleChannel(sm.id));
     const del = el('button', 'ms del', '🗑'); del.title = 'Удалить из «Мои звуки»';
     del.addEventListener('click', () => deleteSample(sm.id));
-    it.append(pn, play, hit, nts, add, del);
+    it.append(pn, play, hit, nts, root, add, del);
     box.append(it);
   }
   if (list.length > 400) box.append(el('div', 'recnote', `Показаны первые 400 из ${list.length} — уточни поиск.`));
@@ -5801,6 +5892,8 @@ $('#preset').addEventListener('change', e => {
   e.target.value = '';
 });
 $('#random').addEventListener('click', randomize);
+$('#rndSnd').value = localStorage.getItem('beatlab-rnd-snd') || 'keep';
+$('#rndSnd').addEventListener('change', e => localStorage.setItem('beatlab-rnd-snd', e.target.value));
 $('#clear').addEventListener('click', () => {
   pushUndo();
   for (const ch of state.channels) { ch.steps = Array(MAX).fill(0); ch.notes = []; }
